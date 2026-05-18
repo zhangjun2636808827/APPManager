@@ -411,6 +411,34 @@ h1 {
   box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
 }
 
+.app-card[draggable="true"] {
+  cursor: grab;
+}
+
+.app-card.dragging {
+  opacity: 0.55;
+  transform: scale(0.98);
+}
+
+.app-card.drag-over {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.16);
+}
+
+.drag-handle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  color: #64748b;
+  background: #eef3fa;
+  font-size: 13px;
+}
+
 .app-icon {
   display: grid;
   place-items: center;
@@ -796,6 +824,108 @@ h1 {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.remote-page {
+  display: grid;
+  gap: 14px;
+}
+
+.remote-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.connection-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.connection-card.online {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.connection-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connection-card span,
+.connection-card dt {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.connection-card strong {
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.connection-card p {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+}
+
+.connection-card dl {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.connection-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #334155;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.connected-clients {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #edf1f7;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.connected-clients h3 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.client-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(80px, auto) minmax(100px, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid #f1f5f9;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.client-row strong {
+  color: #334155;
+}
+
+.client-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .remote-empty {

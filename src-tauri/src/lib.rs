@@ -33,6 +33,7 @@ const PACKAGE_CACHE_DIR: &str = "package-cache";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ZIP_BUFFER_SIZE: usize = 64 * 1024;
 static SERVER_RUNTIME: OnceLock<Mutex<Option<ServerRuntime>>> = OnceLock::new();
+static SERVER_CLIENTS: OnceLock<Mutex<HashMap<String, ServerClientInfo>>> = OnceLock::new();
 static TRANSFER_PROGRESS: OnceLock<Mutex<HashMap<String, TransferProgress>>> = OnceLock::new();
 static TRANSFER_SPEED_SAMPLES: OnceLock<Mutex<HashMap<String, TransferSpeedSample>>> =
     OnceLock::new();
@@ -84,6 +85,8 @@ struct Settings {
     server: ServerConfig,
     #[serde(default)]
     client: ClientConfig,
+    #[serde(default)]
+    favorite_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +150,15 @@ struct ServerRuntime {
     port: u16,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerClientInfo {
+    address: String,
+    username: String,
+    last_path: String,
+    last_seen_at: u64,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -157,6 +169,7 @@ impl Default for Settings {
             autostart_enabled: false,
             server: ServerConfig::default(),
             client: ClientConfig::default(),
+            favorite_order: Vec::new(),
         }
     }
 }
@@ -298,6 +311,7 @@ struct ServerStatus {
     running: bool,
     host: String,
     port: u16,
+    clients: Vec<ServerClientInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,6 +320,21 @@ struct PackageCacheInfo {
     path: String,
     file_count: u64,
     total_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientConnectionStatus {
+    configured: bool,
+    online: bool,
+    host: String,
+    port: u16,
+    username: String,
+    message: String,
+    server_name: Option<String>,
+    server_mode: Option<String>,
+    allow_downloads: Option<bool>,
+    checked_at: u64,
 }
 
 #[derive(Debug)]
@@ -628,6 +657,39 @@ fn get_server_status() -> Result<ServerStatus, String> {
 fn get_package_cache_info() -> Result<PackageCacheInfo, String> {
     let library_path = library_root()?;
     package_cache_info(&library_path)
+}
+
+#[tauri::command]
+fn get_client_connection_status() -> Result<ClientConnectionStatus, String> {
+    let library_path = library_root()?;
+    let data = load_or_create_data(&library_path)?;
+    Ok(client_connection_status(&data.settings.client))
+}
+
+#[tauri::command]
+fn update_favorite_order(app_ids: Vec<String>) -> Result<AppData, String> {
+    let library_path = library_root()?;
+    let mut data = load_or_create_data(&library_path)?;
+    let favorites = data
+        .apps
+        .iter()
+        .filter(|app| app.favorite)
+        .map(|app| app.id.clone())
+        .collect::<HashSet<_>>();
+    let mut ordered = Vec::new();
+    for app_id in app_ids {
+        if favorites.contains(&app_id) && !ordered.iter().any(|item| item == &app_id) {
+            ordered.push(app_id);
+        }
+    }
+    for app_id in favorites {
+        if !ordered.iter().any(|item| item == &app_id) {
+            ordered.push(app_id);
+        }
+    }
+    data.settings.favorite_order = ordered;
+    save_data(&library_path, &data)?;
+    Ok(data)
 }
 
 #[tauri::command]
@@ -1162,6 +1224,10 @@ fn server_runtime() -> &'static Mutex<Option<ServerRuntime>> {
     SERVER_RUNTIME.get_or_init(|| Mutex::new(None))
 }
 
+fn server_clients() -> &'static Mutex<HashMap<String, ServerClientInfo>> {
+    SERVER_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn transfer_progress_store() -> &'static Mutex<HashMap<String, TransferProgress>> {
     TRANSFER_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -1176,19 +1242,34 @@ fn transfer_key(direction: &str, app_id: &str) -> String {
 
 fn current_server_status() -> ServerStatus {
     let runtime = server_runtime().lock().ok();
+    let clients = recent_server_clients();
     if let Some(Some(runtime)) = runtime.as_deref() {
         ServerStatus {
             running: !runtime.stop.load(Ordering::SeqCst),
             host: runtime.host.clone(),
             port: runtime.port,
+            clients,
         }
     } else {
         ServerStatus {
             running: false,
             host: String::new(),
             port: 0,
+            clients,
         }
     }
+}
+
+fn recent_server_clients() -> Vec<ServerClientInfo> {
+    let cutoff = now().saturating_sub(10 * 60 * 1000);
+    let Ok(mut clients) = server_clients().lock() else {
+        return Vec::new();
+    };
+    clients.retain(|_, client| client.last_seen_at >= cutoff);
+    let mut values = clients.values().cloned().collect::<Vec<_>>();
+    values.sort_by(|left, right| right.last_seen_at.cmp(&left.last_seen_at));
+    values.truncate(12);
+    values
 }
 
 fn start_server(config: ServerConfig, app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -1262,9 +1343,13 @@ fn handle_http_stream(mut stream: TcpStream, config: ServerConfig, app_handle: t
     let method = parts[0];
     let path = parts[1].split('?').next().unwrap_or(parts[1]);
     let headers = parse_headers(&request);
+    let authorized = path == "/api/server-info" || is_authorized(&headers, &config);
+    if authorized && !path.ends_with("/progress") {
+        remember_server_client(&stream, &headers, path);
+    }
 
     if method == "POST" && path == "/api/apps/upload" {
-        if !is_authorized(&headers, &config) {
+        if !authorized {
             write_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#);
             return;
         }
@@ -1283,7 +1368,7 @@ fn handle_http_stream(mut stream: TcpStream, config: ServerConfig, app_handle: t
         return;
     }
 
-    if path != "/api/server-info" && !is_authorized(&headers, &config) {
+    if !authorized {
         write_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#);
         return;
     }
@@ -1338,6 +1423,28 @@ fn handle_http_stream(mut stream: TcpStream, config: ServerConfig, app_handle: t
     };
 
     write_json_response(&mut stream, 200, &body);
+}
+
+fn remember_server_client(stream: &TcpStream, headers: &[(String, String)], path: &str) {
+    let address = stream
+        .peer_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let username = headers
+        .iter()
+        .find(|(name, _)| name == "x-appmanager-username")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| "anonymous".to_string());
+    let client = ServerClientInfo {
+        address: address.clone(),
+        username,
+        last_path: path.to_string(),
+        last_seen_at: now(),
+    };
+
+    if let Ok(mut clients) = server_clients().lock() {
+        clients.insert(address, client);
+    }
 }
 
 fn handle_download_request(
@@ -2138,6 +2245,65 @@ fn calculate_transfer_speed(key: &str, transferred: u64, status: &str) -> u64 {
 
 fn client_get(config: &ClientConfig, path: &str) -> Result<HttpResponse, String> {
     client_get_streaming(config, path, "download", path, "远程软件", None)
+}
+
+fn client_connection_status(config: &ClientConfig) -> ClientConnectionStatus {
+    let configured = !config.host.trim().is_empty()
+        && !config.username.trim().is_empty()
+        && !config.password.is_empty();
+    let mut status = ClientConnectionStatus {
+        configured,
+        online: false,
+        host: config.host.trim().to_string(),
+        port: config.port,
+        username: config.username.trim().to_string(),
+        message: if configured {
+            "未检测".to_string()
+        } else {
+            "请先填写服务端地址、用户名和密码".to_string()
+        },
+        server_name: None,
+        server_mode: None,
+        allow_downloads: None,
+        checked_at: now(),
+    };
+
+    if !configured {
+        return status;
+    }
+
+    match client_get(config, "/api/server-info") {
+        Ok(response) if response.status == 200 => {
+            let value = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
+            status.online = true;
+            status.message = "连接正常".to_string();
+            status.server_name = value
+                .as_ref()
+                .and_then(|item| item.get("name"))
+                .and_then(|item| item.as_str())
+                .map(|item| item.to_string());
+            status.server_mode = value
+                .as_ref()
+                .and_then(|item| item.get("mode"))
+                .and_then(|item| item.as_str())
+                .map(|item| item.to_string());
+            status.allow_downloads = value
+                .as_ref()
+                .and_then(|item| item.get("allowDownloads"))
+                .and_then(|item| item.as_bool());
+        }
+        Ok(response) if response.status == 401 => {
+            status.message = "认证失败，请检查用户名和密码".to_string();
+        }
+        Ok(response) => {
+            status.message = format!("连接异常，HTTP 状态：{}", response.status);
+        }
+        Err(error) => {
+            status.message = error;
+        }
+    }
+
+    status
 }
 
 fn client_get_streaming(
@@ -4031,6 +4197,8 @@ pub fn run() {
             update_settings,
             get_server_status,
             get_package_cache_info,
+            get_client_connection_status,
+            update_favorite_order,
             clear_package_cache,
             get_transfer_progress,
             debug_log,

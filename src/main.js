@@ -40,6 +40,7 @@ const state = {
   serverAllowDownloads: true,
   serverStatus: null,
   packageCache: { path: "", fileCount: 0, totalSize: 0 },
+  clientStatus: null,
   clientHost: "127.0.0.1",
   clientPort: 8765,
   clientUsername: "admin",
@@ -51,6 +52,8 @@ const state = {
   transferDebug: {},
   transferUnlisten: null,
   suppressLaunchUntil: 0,
+  dragFavoriteId: null,
+  favoriteOrder: [],
   categories: demoCategories,
   apps: demoApps,
   isTauri: Boolean(window.__TAURI__?.core?.invoke)
@@ -89,6 +92,7 @@ async function boot() {
     state.autostartEnabled = Boolean(result.data.settings?.autostartEnabled);
     state.serverStatus = state.isTauri ? await invoke("get_server_status") : null;
     state.packageCache = state.isTauri ? await invoke("get_package_cache_info") : state.packageCache;
+    state.clientStatus = state.isTauri ? await invoke("get_client_connection_status") : state.clientStatus;
     if (state.runMode === "server") {
       await refreshReviewApps({ silent: true });
     }
@@ -267,6 +271,7 @@ function applyData(data) {
   state.serverUsername = data.settings?.server?.username ?? state.serverUsername;
   state.serverPassword = data.settings?.server?.password ?? state.serverPassword;
   state.serverAllowDownloads = data.settings?.server?.allowDownloads ?? state.serverAllowDownloads;
+  state.favoriteOrder = data.settings?.favoriteOrder || [];
   state.clientHost = data.settings?.client?.host ?? state.clientHost;
   state.clientPort = data.settings?.client?.port ?? state.clientPort;
   state.clientUsername = data.settings?.client?.username ?? state.clientUsername;
@@ -286,7 +291,7 @@ function getVisibleApps() {
   }
 
   const query = state.query.trim().toLowerCase();
-  return state.apps.filter((item) => {
+  const items = state.apps.filter((item) => {
     const viewMatch =
       state.view === "favorites"
         ? item.favorite
@@ -300,6 +305,22 @@ function getVisibleApps() {
       || item.note.toLowerCase().includes(query);
 
     return viewMatch && queryMatch;
+  });
+
+  if (state.view === "favorites") {
+    return sortFavorites(items);
+  }
+
+  return items;
+}
+
+function sortFavorites(items) {
+  const order = new Map((state.favoriteOrder || []).map((id, index) => [id, index]));
+  return [...items].sort((left, right) => {
+    const leftOrder = order.has(left.id) ? order.get(left.id) : Number.MAX_SAFE_INTEGER;
+    const rightOrder = order.has(right.id) ? order.get(right.id) : Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.name.localeCompare(right.name, "zh-Hans-CN");
   });
 }
 
@@ -335,7 +356,7 @@ function render() {
         <nav class="nav-section">
           ${navItem("favorites", "☆", "常用软件", state.apps.filter((item) => item.favorite).length)}
           ${navItem("all", "◎", "全部软件", state.apps.length)}
-          ${remoteCount ? navItem("remote", "⇄", "远程软件", remoteCount) : ""}
+          ${navItem("remote", "⇄", "远程连接", remoteCount)}
         </nav>
 
         <div class="section-label">分类</div>
@@ -432,13 +453,15 @@ function navItem(id, icon, label, count) {
 }
 
 function renderGrid(items) {
+  const sortableFavorites = state.view === "favorites" && !state.query.trim();
   return `
     <div class="app-grid ${state.density}">
       ${items.map((item) => `
-        <article class="app-card" data-app="${item.id}">
+        <article class="app-card ${state.dragFavoriteId === item.id ? "dragging" : ""}" data-app="${item.id}" ${sortableFavorites ? `draggable="true" data-favorite-sort="true"` : ""}>
           ${renderAppIcon(item)}
           <h3>${escapeHtml(item.name)}</h3>
           <p>${escapeHtml(item.note)}</p>
+          ${sortableFavorites ? `<span class="drag-handle" title="拖动调整常用软件顺序">↕</span>` : ""}
         </article>
       `).join("")}
     </div>
@@ -656,21 +679,86 @@ function renderModeOption(value, title, description) {
 
 function renderRemoteApps(source = "settings") {
   const uploadItems = state.uploadQueue.filter((item) => getTransfer("upload", item.id));
-  if (!state.remoteApps.length && !uploadItems.length) {
-    return `
+  const content = !state.remoteApps.length && !uploadItems.length
+    ? `
       <div class="remote-empty">
-        ${source === "menu" ? "还没有服务端软件列表。请先到设置中连接服务端并获取列表。" : "还没有服务端软件列表。请先保存客户端设置，然后点击“获取服务端软件列表”。"}
+        ${source === "menu" ? "还没有服务端软件列表。请先保存客户端设置，然后获取服务端软件列表。" : "还没有服务端软件列表。请先保存客户端设置，然后点击“获取服务端软件列表”。"}
+      </div>
+    `
+    : `
+      <div class="remote-app-list">
+        ${uploadItems.map((item) => renderTransferAppRow(item, "upload")).join("")}
+        ${state.remoteApps.map((item) => `
+          ${renderTransferAppRow(item, "download")}
+        `).join("")}
+      </div>
+    `;
+
+  if (source === "menu") {
+    return `
+      <div class="remote-page">
+        ${renderRemoteStatusPanel()}
+        <div class="settings-action-row">
+          <button class="ghost-button" data-action="refresh-connection-status">刷新连接状态</button>
+          <button class="primary-action" data-action="fetch-remote-apps">获取服务端软件列表</button>
+        </div>
+        ${content}
       </div>
     `;
   }
 
+  return content;
+}
+
+function renderRemoteStatusPanel() {
+  const client = state.clientStatus || {
+    configured: false,
+    online: false,
+    host: state.clientHost,
+    port: state.clientPort,
+    username: state.clientUsername,
+    message: "未检测"
+  };
+  const server = state.serverStatus || { running: false, host: "", port: 0, clients: [] };
+  const clients = server.clients || [];
   return `
-    <div class="remote-app-list">
-      ${uploadItems.map((item) => renderTransferAppRow(item, "upload")).join("")}
-      ${state.remoteApps.map((item) => `
-        ${renderTransferAppRow(item, "download")}
-      `).join("")}
-    </div>
+    <section class="remote-status-grid">
+      <article class="connection-card ${client.online ? "online" : ""}">
+        <div>
+          <span>客户端连接</span>
+          <strong>${client.online ? "已连接" : client.configured ? "未连接" : "未配置"}</strong>
+        </div>
+        <p>${escapeHtml(client.message || "未检测")}</p>
+        <dl>
+          <dt>服务端</dt><dd>${escapeHtml(client.host || "-")}:${escapeHtml(client.port || "-")}</dd>
+          <dt>用户</dt><dd>${escapeHtml(client.username || "-")}</dd>
+          <dt>下载</dt><dd>${client.allowDownloads === true ? "允许" : client.allowDownloads === false ? "禁止" : "未知"}</dd>
+        </dl>
+      </article>
+      <article class="connection-card ${server.running ? "online" : ""}">
+        <div>
+          <span>本机服务端</span>
+          <strong>${server.running ? "运行中" : "未运行"}</strong>
+        </div>
+        <p>${server.running ? `${escapeHtml(server.host)}:${escapeHtml(server.port)}` : "切换到服务端模式并保存后启动"}</p>
+        <dl>
+          <dt>最近客户端</dt><dd>${clients.length} 个</dd>
+          <dt>监听地址</dt><dd>${server.running ? `${escapeHtml(server.host)}:${escapeHtml(server.port)}` : "-"}</dd>
+        </dl>
+      </article>
+    </section>
+    ${clients.length ? `
+      <section class="connected-clients">
+        <h3>最近连接客户端</h3>
+        ${clients.map((client) => `
+          <div class="client-row">
+            <span>${escapeHtml(client.address)}</span>
+            <strong>${escapeHtml(client.username || "anonymous")}</strong>
+            <small>${escapeHtml(client.lastPath || "")}</small>
+          </div>
+        `).join("")}
+      </section>
+    ` : ""}
   `;
 }
 
@@ -1092,8 +1180,11 @@ function bindEvents() {
   bindAppCards();
 
   document.querySelectorAll("[data-view]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       state.view = button.dataset.view;
+      if (state.view === "remote") {
+        await refreshConnectionStatus({ silent: true });
+      }
       render();
     });
   });
@@ -1149,6 +1240,42 @@ function bindAppCards() {
       };
       render();
     });
+
+    if (card.dataset.favoriteSort === "true") {
+      card.addEventListener("dragstart", (event) => {
+        state.dragFavoriteId = card.dataset.app;
+        state.suppressLaunchUntil = Date.now() + 1200;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", card.dataset.app);
+        card.classList.add("dragging");
+      });
+
+      card.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        card.classList.add("drag-over");
+      });
+
+      card.addEventListener("dragleave", () => {
+        card.classList.remove("drag-over");
+      });
+
+      card.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        card.classList.remove("drag-over");
+        const sourceId = event.dataTransfer.getData("text/plain") || state.dragFavoriteId;
+        const targetId = card.dataset.app;
+        state.dragFavoriteId = null;
+        if (sourceId && targetId && sourceId !== targetId) {
+          await reorderFavoriteApps(sourceId, targetId);
+        }
+      });
+
+      card.addEventListener("dragend", () => {
+        state.dragFavoriteId = null;
+        card.classList.remove("dragging", "drag-over");
+      });
+    }
   });
 }
 
@@ -1234,6 +1361,11 @@ async function handleAction(button) {
 
   if (action === "fetch-remote-apps") {
     if (await saveSettings(button, { silent: true })) await fetchRemoteApps();
+    return;
+  }
+
+  if (action === "refresh-connection-status") {
+    await refreshConnectionStatus();
     return;
   }
 
@@ -1383,6 +1515,27 @@ async function toggleFavorite(appId) {
     const data = await invoke("toggle_favorite", { appId });
     applyData(data);
   }, "收藏操作失败");
+}
+
+async function reorderFavoriteApps(sourceId, targetId) {
+  const favorites = sortFavorites(state.apps.filter((item) => item.favorite)).map((item) => item.id);
+  const fromIndex = favorites.indexOf(sourceId);
+  const toIndex = favorites.indexOf(targetId);
+  if (fromIndex < 0 || toIndex < 0) return;
+
+  favorites.splice(fromIndex, 1);
+  favorites.splice(toIndex, 0, sourceId);
+  state.favoriteOrder = favorites;
+  state.suppressLaunchUntil = Date.now() + 800;
+  render();
+
+  if (!state.isTauri) return;
+
+  await runTask(async () => {
+    const data = await invoke("update_favorite_order", { appIds: favorites });
+    applyData(data);
+    showToast("常用软件顺序已保存");
+  }, "保存常用软件顺序失败");
 }
 
 async function updateAppInfo() {
@@ -1544,6 +1697,7 @@ async function saveSettings(source, options = {}) {
     });
     applyData(data);
     state.serverStatus = await invoke("get_server_status");
+    state.clientStatus = await invoke("get_client_connection_status");
     if (!options.silent) showToast("设置已保存");
   }, "保存设置失败");
 }
@@ -1556,6 +1710,8 @@ async function testClientConnection() {
 
   await runTask(async () => {
     const message = await invoke("test_client_connection");
+    state.clientStatus = await invoke("get_client_connection_status");
+    state.serverStatus = await invoke("get_server_status");
     showToast(message);
   }, "测试连接失败");
 }
@@ -1567,10 +1723,27 @@ async function fetchRemoteApps() {
   }
 
   await runTask(async () => {
+    state.clientStatus = await invoke("get_client_connection_status");
     state.remoteApps = await invoke("fetch_remote_apps");
+    state.serverStatus = await invoke("get_server_status");
     state.view = "remote";
     showToast(`已获取 ${state.remoteApps.length} 个服务端软件`);
   }, "获取服务端软件失败");
+}
+
+async function refreshConnectionStatus(options = {}) {
+  if (!state.isTauri) {
+    if (!options.silent) showToast("浏览器预览模式不会检测连接状态");
+    return;
+  }
+
+  await runTask(async () => {
+    state.serverStatus = await invoke("get_server_status");
+    state.clientStatus = await invoke("get_client_connection_status");
+    if (!options.silent) {
+      showToast(state.clientStatus?.online ? "远程连接正常" : `远程未连接：${state.clientStatus?.message || "未知状态"}`);
+    }
+  }, "刷新连接状态失败");
 }
 
 async function refreshPackageCache(options = {}) {
