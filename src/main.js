@@ -1295,6 +1295,7 @@ function bindAppCards() {
     if (card.dataset.favoriteSort === "true") {
       card.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
+        event.preventDefault();
         const sourceId = card.dataset.app;
         const startX = event.clientX;
         const startY = event.clientY;
