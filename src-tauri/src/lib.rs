@@ -5,7 +5,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::{Read, Write},
-    net::{Shutdown, TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -34,6 +34,8 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ZIP_BUFFER_SIZE: usize = 64 * 1024;
 const SERVER_CLIENT_ONLINE_SECONDS: u64 = 30;
 const SERVER_CLIENT_KEEP_SECONDS: u64 = 5 * 60;
+const CLIENT_STATUS_CONNECT_TIMEOUT_MS: u64 = 1200;
+const CLIENT_STATUS_IO_TIMEOUT_MS: u64 = 1500;
 static SERVER_RUNTIME: OnceLock<Mutex<Option<ServerRuntime>>> = OnceLock::new();
 static SERVER_CLIENTS: OnceLock<Mutex<HashMap<String, ServerClientInfo>>> = OnceLock::new();
 static TRANSFER_PROGRESS: OnceLock<Mutex<HashMap<String, TransferProgress>>> = OnceLock::new();
@@ -2256,6 +2258,56 @@ fn client_get(config: &ClientConfig, path: &str) -> Result<HttpResponse, String>
     client_get_streaming(config, path, "download", path, "远程软件", None)
 }
 
+fn client_get_status(config: &ClientConfig, path: &str) -> Result<HttpResponse, String> {
+    client_get_with_timeouts(
+        config,
+        path,
+        Duration::from_millis(CLIENT_STATUS_CONNECT_TIMEOUT_MS),
+        Duration::from_millis(CLIENT_STATUS_IO_TIMEOUT_MS),
+    )
+}
+
+fn client_get_with_timeouts(
+    config: &ClientConfig,
+    path: &str,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+) -> Result<HttpResponse, String> {
+    if config.host.trim().is_empty() {
+        return Err("请先填写服务端地址".to_string());
+    }
+
+    if config.username.trim().is_empty() || config.password.is_empty() {
+        return Err("请先填写客户端用户名和密码".to_string());
+    }
+
+    let address = format!("{}:{}", config.host.trim(), config.port);
+    let socket_addr = address
+        .to_socket_addrs()
+        .map_err(|error| format!("解析服务端地址失败：{error}"))?
+        .next()
+        .ok_or_else(|| "解析服务端地址失败：没有可用地址".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, connect_timeout)
+        .map_err(|error| format!("连接服务端失败：{error}"))?;
+    let _ = stream.set_read_timeout(Some(io_timeout));
+    let _ = stream.set_write_timeout(Some(io_timeout));
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {}:{}\r\nX-AppManager-Username: {}\r\nX-AppManager-Password: {}\r\nConnection: close\r\n\r\n",
+        config.host.trim(),
+        config.port,
+        config.username.trim(),
+        config.password
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(error_message)?;
+
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).map_err(error_message)?;
+    parse_http_response(response)
+}
+
 fn client_connection_status(config: &ClientConfig) -> ClientConnectionStatus {
     let configured = !config.host.trim().is_empty()
         && !config.username.trim().is_empty()
@@ -2281,11 +2333,11 @@ fn client_connection_status(config: &ClientConfig) -> ClientConnectionStatus {
         return status;
     }
 
-    match client_get(config, "/api/auth/test") {
+    match client_get_status(config, "/api/auth/test") {
         Ok(response) if response.status == 200 => {
             status.online = true;
             status.message = "连接正常".to_string();
-            if let Ok(info_response) = client_get(config, "/api/server-info") {
+            if let Ok(info_response) = client_get_status(config, "/api/server-info") {
                 let value = serde_json::from_slice::<serde_json::Value>(&info_response.body).ok();
                 status.server_name = value
                     .as_ref()

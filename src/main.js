@@ -53,6 +53,7 @@ const state = {
   transferUnlisten: null,
   suppressLaunchUntil: 0,
   dragFavoriteId: null,
+  dragFavoriteTargetId: null,
   favoriteOrder: [],
   categories: demoCategories,
   apps: demoApps,
@@ -460,7 +461,7 @@ function renderGrid(items) {
   return `
     <div class="app-grid ${state.density}">
       ${items.map((item) => `
-        <article class="app-card ${state.dragFavoriteId === item.id ? "dragging" : ""}" data-app="${item.id}" ${sortableFavorites ? `draggable="true" data-favorite-sort="true"` : ""}>
+        <article class="app-card ${state.dragFavoriteId === item.id ? "dragging" : ""} ${state.dragFavoriteTargetId === item.id ? "drag-over" : ""}" data-app="${item.id}" ${sortableFavorites ? `data-favorite-sort="true"` : ""}>
           ${renderAppIcon(item)}
           <h3>${escapeHtml(item.name)}</h3>
           <p>${escapeHtml(item.note)}</p>
@@ -1207,10 +1208,12 @@ function bindEvents() {
   bindAppCards();
 
   document.querySelectorAll("[data-view]").forEach((button) => {
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", () => {
       state.view = button.dataset.view;
       if (state.view === "remote") {
-        await refreshConnectionStatus({ silent: true });
+        render();
+        refreshConnectionStatus({ silent: true });
+        return;
       }
       render();
     });
@@ -1251,6 +1254,12 @@ function bindEvents() {
 }
 
 function bindAppCards() {
+  const finishFavoritePointerDrag = () => {
+    state.dragFavoriteId = null;
+    state.dragFavoriteTargetId = null;
+    document.querySelectorAll(".app-card.dragging, .app-card.drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
+  };
+
   document.querySelectorAll(".app-card").forEach((card) => {
     card.addEventListener("click", async () => {
       if (state.contextMenu) return;
@@ -1269,6 +1278,34 @@ function bindAppCards() {
     });
 
     if (card.dataset.favoriteSort === "true") {
+      card.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) return;
+        state.dragFavoriteId = card.dataset.app;
+        state.dragFavoriteTargetId = null;
+        state.suppressLaunchUntil = Date.now() + 1200;
+        card.setPointerCapture?.(event.pointerId);
+        card.classList.add("dragging");
+      });
+
+      card.addEventListener("pointerenter", () => {
+        if (!state.dragFavoriteId || state.dragFavoriteId === card.dataset.app) return;
+        state.dragFavoriteTargetId = card.dataset.app;
+        document.querySelectorAll(".app-card.drag-over").forEach((item) => item.classList.remove("drag-over"));
+        card.classList.add("drag-over");
+      });
+
+      card.addEventListener("pointerup", async (event) => {
+        const sourceId = state.dragFavoriteId;
+        const targetId = state.dragFavoriteTargetId || card.dataset.app;
+        card.releasePointerCapture?.(event.pointerId);
+        finishFavoritePointerDrag();
+        if (sourceId && targetId && sourceId !== targetId) {
+          await reorderFavoriteApps(sourceId, targetId);
+        }
+      });
+
+      card.addEventListener("pointercancel", finishFavoritePointerDrag);
+
       card.addEventListener("dragstart", (event) => {
         state.dragFavoriteId = card.dataset.app;
         state.suppressLaunchUntil = Date.now() + 1200;
