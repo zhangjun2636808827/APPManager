@@ -1184,6 +1184,10 @@ function renderContextMenu() {
         <span>i</span>
         编辑信息
       </button>
+      <button data-action="change-icon" data-app-id="${item.id}">
+        <span>▣</span>
+        更换图标
+      </button>
       <button class="danger-menu-item" data-action="delete-app" data-app-id="${item.id}">
         <span>×</span>
         删除软件
@@ -1281,10 +1285,6 @@ function renderModal() {
                 ? candidates.map((path) => `<option value="${escapeHtml(path)}" ${path === item.executablePath ? "selected" : ""}>${escapeHtml(shortPath(path))}</option>`).join("")
                 : `<option value="">未发现可执行文件，请重新扫描</option>`}
             </select>
-          </label>
-          <label class="field">
-            自定义图标路径
-            <input placeholder="例如：D:\\Icons\\xcom.png，不填则保留当前图标" data-role="edit-app-icon" />
           </label>
           <div class="modal-actions">
             <button class="ghost-button" data-action="close-modal">取消</button>
@@ -1586,6 +1586,11 @@ async function handleAction(button) {
     state.modal = "edit-app";
   }
 
+  if (action === "change-icon") {
+    await changeAppIcon(button.dataset.appId);
+    return;
+  }
+
   if (action === "delete-app") {
     state.selectedAppId = button.dataset.appId;
     state.modal = "delete-app";
@@ -1854,7 +1859,6 @@ async function updateAppInfo() {
   const appId = state.selectedAppId;
   const name = document.querySelector("[data-role='edit-app-name']")?.value ?? "";
   const note = document.querySelector("[data-role='edit-app-note']")?.value ?? "";
-  const iconPath = document.querySelector("[data-role='edit-app-icon']")?.value ?? "";
   const executablePath = document.querySelector("[data-role='edit-app-executable']")?.value ?? null;
 
   if (!name.trim()) {
@@ -1881,7 +1885,7 @@ async function updateAppInfo() {
         appId,
         name,
         note,
-        iconPath,
+        iconPath: "",
         executablePath
       }
     });
@@ -1892,6 +1896,96 @@ async function updateAppInfo() {
     showToast("软件信息已保存");
     render();
   }, "保存软件信息失败");
+}
+
+async function changeAppIcon(appId) {
+  state.suppressLaunchUntil = Date.now() + 1500;
+  const app = state.apps.find((appItem) => appItem.id === appId);
+  if (!app) return;
+
+  try {
+    const iconDataUrl = await pickImageDataUrl();
+    if (!iconDataUrl) return;
+
+    if (!state.isTauri) {
+      app.iconDataUrl = iconDataUrl;
+      render();
+      return;
+    }
+
+    await runTask(async () => {
+      const data = await invoke("update_app_info", {
+        request: {
+          appId,
+          name: app.name,
+          note: app.note || "",
+          iconPath: "",
+          iconDataUrl,
+          executablePath: app.executablePath || null
+        }
+      });
+      applyData(data);
+      state.suppressLaunchUntil = Date.now() + 1500;
+      showToast("软件图标已更新");
+      render();
+    }, "更新软件图标失败");
+  } catch (error) {
+    showToast(`选择图标失败：${error}`);
+  }
+}
+
+function pickImageDataUrl() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/gif,image/webp,image/x-icon,image/bmp,.png,.jpg,.jpeg,.gif,.webp,.ico,.bmp";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      input.remove();
+      if (!file) {
+        resolve("");
+        return;
+      }
+      if (file.size > 4 * 1024 * 1024) {
+        reject("图标图片不能超过 4 MB");
+        return;
+      }
+      if (!isSupportedIconFile(file)) {
+        reject("图标仅支持 png、jpg、jpeg、gif、webp、ico、bmp");
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result || "")));
+      reader.addEventListener("error", () => reject("读取图片失败"));
+      reader.readAsDataURL(file);
+    }, { once: true });
+
+    input.addEventListener("cancel", () => {
+      input.remove();
+      resolve("");
+    }, { once: true });
+
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+
+function isSupportedIconFile(file) {
+  const validTypes = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+    "image/bmp"
+  ]);
+  if (validTypes.has(file.type)) return true;
+  return /\.(png|jpe?g|gif|webp|ico|bmp)$/i.test(file.name);
 }
 
 async function refreshServerUploadData() {

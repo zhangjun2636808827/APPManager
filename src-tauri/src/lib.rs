@@ -300,6 +300,8 @@ struct UpdateAppInfoRequest {
     name: String,
     note: String,
     icon_path: Option<String>,
+    #[serde(default)]
+    icon_data_url: Option<String>,
     executable_path: Option<String>,
 }
 
@@ -614,6 +616,10 @@ fn update_app_info(request: UpdateAppInfoRequest) -> Result<AppData, String> {
         if !clean_icon_path.is_empty() {
             app.icon_data_url = Some(read_image_as_data_url(clean_icon_path)?);
         }
+    }
+
+    if let Some(icon_data_url) = request.icon_data_url {
+        app.icon_data_url = Some(validate_image_data_url(&icon_data_url)?);
     }
 
     save_data(&library_path, &data)?;
@@ -1266,6 +1272,41 @@ fn read_image_as_data_url(path: &str) -> Result<String, String> {
 
     let bytes = fs::read(image_path).map_err(error_message)?;
     Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+fn validate_image_data_url(value: &str) -> Result<String, String> {
+    let clean_value = value.trim();
+    if clean_value.len() > 4 * 1024 * 1024 {
+        return Err("图标图片不能超过 4 MB".to_string());
+    }
+
+    let Some((mime, payload)) = clean_value.split_once(";base64,") else {
+        return Err("图标图片格式无效".to_string());
+    };
+
+    let valid_mime = matches!(
+        mime,
+        "data:image/png"
+            | "data:image/jpeg"
+            | "data:image/gif"
+            | "data:image/webp"
+            | "data:image/x-icon"
+            | "data:image/vnd.microsoft.icon"
+            | "data:image/bmp"
+    );
+    if !valid_mime {
+        return Err("图标仅支持 png、jpg、jpeg、gif、webp、ico、bmp".to_string());
+    }
+
+    if payload.is_empty()
+        || !payload
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
+        return Err("图标图片内容无效".to_string());
+    }
+
+    Ok(clean_value.to_string())
 }
 
 fn set_windows_autostart(enabled: bool) -> Result<(), String> {
