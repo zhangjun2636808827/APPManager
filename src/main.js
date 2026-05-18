@@ -1356,7 +1356,8 @@ function bindEvents() {
     event.preventDefault();
   }, { passive: false });
 
-  document.querySelector(".shell")?.addEventListener("click", () => {
+  document.querySelector(".shell")?.addEventListener("click", (event) => {
+    if (event.target.closest(".modal, .modal-backdrop, .context-menu")) return;
     if (state.contextMenu) {
       state.contextMenu = null;
       render();
@@ -1419,6 +1420,11 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll(".modal, .modal-backdrop").forEach((element) => {
+    element.addEventListener("pointerdown", (event) => event.stopPropagation());
+    element.addEventListener("click", (event) => event.stopPropagation());
+  });
+
   bindActionButtons(document);
 }
 
@@ -1445,7 +1451,10 @@ function bindAppCards() {
   };
 
   document.querySelectorAll(".app-card").forEach((card) => {
-    card.addEventListener("click", async () => {
+    card.addEventListener("click", async (event) => {
+      if (state.modal) return;
+      if (event.defaultPrevented) return;
+      if (event.target.closest("[data-action], .modal, .modal-backdrop, .context-menu")) return;
       if (state.contextMenu) return;
       if (Date.now() < state.suppressLaunchUntil) return;
       await launchApp(card.dataset.app);
@@ -1879,7 +1888,9 @@ async function updateAppInfo() {
     applyData(data);
     state.modal = null;
     state.selectedAppId = null;
+    state.suppressLaunchUntil = Date.now() + 1500;
     showToast("软件信息已保存");
+    render();
   }, "保存软件信息失败");
 }
 
