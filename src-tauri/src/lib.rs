@@ -21,7 +21,7 @@ use tauri::Emitter;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{ffi::OsStrExt, process::CommandExt};
 
 const LIBRARY_DIR: &str = "AppManagerLibrary";
 const APPS_DIR: &str = "Apps";
@@ -1114,14 +1114,42 @@ fn launch_app_inner(app_id: String, as_admin: bool) -> Result<LaunchResult, Stri
 #[cfg(windows)]
 fn launch_process_as_admin(executable: &Path) -> Result<(), String> {
     let parent = executable.parent().unwrap_or_else(|| Path::new("."));
-    hidden_command("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
-        .arg("Start-Process -FilePath $args[0] -WorkingDirectory $args[1] -Verb RunAs")
-        .arg(native_path_to_string(executable))
-        .arg(native_path_to_string(parent))
-        .spawn()
-        .map_err(error_message)?;
+    let verb = wide_null("runas");
+    let file = wide_null(executable.as_os_str());
+    let directory = wide_null(parent.as_os_str());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            directory.as_ptr(),
+            1,
+        )
+    };
+    let code = result as isize;
+    if code <= 32 {
+        return Err(format!("管理员权限启动失败，系统错误码：{code}"));
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn wide_null(value: impl AsRef<OsStr>) -> Vec<u16> {
+    value.as_ref().encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut std::ffi::c_void,
+        lpoperation: *const u16,
+        lpfile: *const u16,
+        lpparameters: *const u16,
+        lpdirectory: *const u16,
+        nshowcmd: i32,
+    ) -> *mut std::ffi::c_void;
 }
 
 #[cfg(not(windows))]
