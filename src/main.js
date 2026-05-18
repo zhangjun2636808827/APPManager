@@ -19,11 +19,12 @@ const demoApps = [
 ];
 
 const accents = ["blue", "orange", "green", "pink", "indigo", "slate", "teal"];
-const ENABLE_DEBUG_LOGS = false;
+const ENABLE_DEBUG_LOGS = true;
 const CONNECTION_STATUS_INTERVAL_MS = 15000;
 const APP_GRID_RENDER_LIMIT = 240;
 const REMOTE_LIST_RENDER_LIMIT = 160;
 const REVIEW_LIST_RENDER_LIMIT = 120;
+const SLOW_RENDER_THRESHOLD_MS = 80;
 
 const state = {
   view: "favorites",
@@ -72,6 +73,7 @@ let transferRenderTimer = null;
 let toastTimer = null;
 let connectionStatusTimer = null;
 let connectionStatusRefreshing = false;
+let renderSequence = 0;
 const transferPollers = {};
 
 function invoke(command, payload) {
@@ -166,6 +168,12 @@ function debugLog(message) {
   if (!ENABLE_DEBUG_LOGS) return;
   if (!state.isTauri) return;
   invoke("debug_log", { message }).catch(() => {});
+}
+
+function memoryDebugText() {
+  const memory = performance?.memory;
+  if (!memory) return "memory=unavailable";
+  return `memory=${formatBytes(memory.usedJSHeapSize || 0)}/${formatBytes(memory.totalJSHeapSize || 0)}`;
 }
 
 function formatDebugError(error) {
@@ -414,6 +422,9 @@ function getTitle() {
 }
 
 function render() {
+  const renderId = ++renderSequence;
+  const startedAt = performance.now();
+  const beforeNodeCount = document.getElementsByTagName("*").length;
   const contentElement = document.querySelector(".content");
   const preserveContentScroll = renderedView === state.view && state.view === "settings";
   const previousContentScroll = preserveContentScroll ? contentElement?.scrollTop ?? 0 : 0;
@@ -516,6 +527,11 @@ function render() {
   if (state.creatingCategory) {
     window.setTimeout(() => document.querySelector("[data-role='inline-category-name']")?.focus(), 0);
   }
+  const duration = performance.now() - startedAt;
+  const afterNodeCount = document.getElementsByTagName("*").length;
+  if (duration >= SLOW_RENDER_THRESHOLD_MS || state.view === "settings") {
+    debugLog(`render done id=${renderId} view=${state.view} duration=${duration.toFixed(1)}ms nodes=${beforeNodeCount}->${afterNodeCount} apps=${state.apps.length} remote=${state.remoteApps.length} review=${state.reviewApps.length} ${memoryDebugText()}`);
+  }
 }
 
 function renderChromeState() {
@@ -598,6 +614,16 @@ function renderServerStatusSummary() {
     <span>${running ? "服务端运行中" : "服务端未运行"}</span>
     <strong>${running ? `${escapeHtml(state.serverStatus.host)}:${escapeHtml(state.serverStatus.port)}` : "切换到服务端模式并保存后启动"}</strong>
   `;
+}
+
+function renderThemeSelectionState() {
+  document.querySelectorAll("[data-theme]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.theme === state.theme);
+  });
+  const themeRow = [...document.querySelectorAll(".setting-row")]
+    .find((row) => row.querySelector("span")?.textContent === "主题");
+  const value = themeRow?.querySelector("strong");
+  if (value) value.textContent = themeLabel(state.theme);
 }
 
 function formatCheckedAt(value) {
@@ -1386,7 +1412,8 @@ function bindEvents() {
     button.addEventListener("click", () => {
       state.theme = normalizeTheme(button.dataset.theme);
       applyTheme();
-      render();
+      renderThemeSelectionState();
+      debugLog(`theme changed value=${state.theme} view=${state.view} ${memoryDebugText()}`);
     });
   });
 
@@ -2261,7 +2288,7 @@ async function reveal(path) {
 
 async function runTask(task, errorPrefix) {
   state.loading = true;
-  render();
+  renderLoadingState();
   try {
     await task();
     return true;
@@ -2270,8 +2297,15 @@ async function runTask(task, errorPrefix) {
     return false;
   } finally {
     state.loading = false;
-    render();
+    renderLoadingState();
   }
+}
+
+function renderLoadingState() {
+  document.querySelectorAll("[data-action='scan']").forEach((button) => {
+    button.disabled = state.loading;
+    button.textContent = state.loading ? "扫描中" : "扫描";
+  });
 }
 
 function showToast(message) {
