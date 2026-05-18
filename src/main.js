@@ -21,6 +21,9 @@ const demoApps = [
 const accents = ["blue", "orange", "green", "pink", "indigo", "slate", "teal"];
 const ENABLE_DEBUG_LOGS = false;
 const CONNECTION_STATUS_INTERVAL_MS = 15000;
+const APP_GRID_RENDER_LIMIT = 240;
+const REMOTE_LIST_RENDER_LIMIT = 160;
+const REVIEW_LIST_RENDER_LIMIT = 120;
 
 const state = {
   view: "favorites",
@@ -542,9 +545,11 @@ function navItem(id, icon, label, count) {
 
 function renderGrid(items) {
   const sortableFavorites = state.view === "favorites" && !state.query.trim();
+  const visibleItems = items.slice(0, APP_GRID_RENDER_LIMIT);
+  const remaining = Math.max(0, items.length - visibleItems.length);
   return `
     <div class="app-grid ${state.density}">
-      ${items.map((item) => `
+      ${visibleItems.map((item) => `
         <article class="app-card ${state.dragFavoriteId === item.id ? "dragging" : ""} ${state.dragFavoriteTargetId === item.id ? "drag-over" : ""}" data-app="${item.id}" ${sortableFavorites ? `data-favorite-sort="true"` : ""}>
           ${renderAppIcon(item)}
           <h3>${escapeHtml(item.name)}</h3>
@@ -553,6 +558,7 @@ function renderGrid(items) {
         </article>
       `).join("")}
     </div>
+    ${remaining ? `<div class="remote-empty">还有 ${remaining} 个软件未显示，请使用搜索或分类缩小范围。</div>` : ""}
   `;
 }
 
@@ -842,6 +848,9 @@ function renderRemoteApps(source = "settings") {
 
   const uploadItems = state.uploadQueue.filter((item) => getTransfer("upload", item.id));
   const remoteItems = isClientMode() ? state.remoteApps : [];
+  const visibleUploadItems = uploadItems.slice(0, REMOTE_LIST_RENDER_LIMIT);
+  const visibleRemoteItems = remoteItems.slice(0, Math.max(0, REMOTE_LIST_RENDER_LIMIT - visibleUploadItems.length));
+  const hiddenRemoteCount = Math.max(0, uploadItems.length + remoteItems.length - visibleUploadItems.length - visibleRemoteItems.length);
   const emptyText = isServerMode()
     ? "当前为服务端模式，客户端连接和服务端软件列表功能未启用。"
     : source === "menu"
@@ -855,11 +864,12 @@ function renderRemoteApps(source = "settings") {
     `
     : `
       <div class="remote-app-list">
-        ${uploadItems.map((item) => renderTransferAppRow(item, "upload")).join("")}
-        ${remoteItems.map((item) => `
+        ${visibleUploadItems.map((item) => renderTransferAppRow(item, "upload")).join("")}
+        ${visibleRemoteItems.map((item) => `
           ${renderTransferAppRow(item, "download")}
         `).join("")}
       </div>
+      ${hiddenRemoteCount ? `<div class="remote-empty">还有 ${hiddenRemoteCount} 个远程条目未显示，请使用搜索缩小范围。</div>` : ""}
     `;
   const reviewContent = isServerMode()
     ? `
@@ -1081,10 +1091,12 @@ function renderReviewApps() {
   if (!state.reviewApps.length) {
     return `<div class="remote-empty">还没有待审核上传。客户端上传后会显示在这里。</div>`;
   }
+  const visibleItems = state.reviewApps.slice(0, REVIEW_LIST_RENDER_LIMIT);
+  const remaining = Math.max(0, state.reviewApps.length - visibleItems.length);
 
   return `
     <div class="remote-app-list">
-      ${state.reviewApps.map((item) => `
+      ${visibleItems.map((item) => `
         <article class="remote-app review-app">
           <div class="app-icon teal">${escapeHtml(getInitials(item.name))}</div>
           <div>
@@ -1098,6 +1110,7 @@ function renderReviewApps() {
         </article>
       `).join("")}
     </div>
+    ${remaining ? `<div class="remote-empty">还有 ${remaining} 个待审核软件未显示，请分批处理。</div>` : ""}
   `;
 }
 
