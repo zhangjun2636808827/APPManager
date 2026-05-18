@@ -39,6 +39,7 @@ const state = {
   serverPassword: "",
   serverAllowDownloads: true,
   serverStatus: null,
+  packageCache: { path: "", fileCount: 0, totalSize: 0 },
   clientHost: "127.0.0.1",
   clientPort: 8765,
   clientUsername: "admin",
@@ -87,6 +88,7 @@ async function boot() {
     state.runMode = result.data.settings?.runMode ?? "local";
     state.autostartEnabled = Boolean(result.data.settings?.autostartEnabled);
     state.serverStatus = state.isTauri ? await invoke("get_server_status") : null;
+    state.packageCache = state.isTauri ? await invoke("get_package_cache_info") : state.packageCache;
     if (state.runMode === "server") {
       await refreshReviewApps({ silent: true });
     }
@@ -480,6 +482,28 @@ function renderSettingsPage() {
         </div>
         <div class="settings-path" title="${escapeHtml(state.libraryPath)}">${escapeHtml(state.libraryPath)}</div>
         <button class="primary-action" data-action="open-library">打开软件库目录</button>
+      </section>
+
+      <section class="settings-panel">
+        <div>
+          <h3>下载缓存</h3>
+          <p>服务端下载大软件时会缓存已打包的 zip，用空间换取下次下载速度。清空缓存不会删除软件库中的真实软件文件。</p>
+        </div>
+        <div class="cache-summary">
+          <div>
+            <span>缓存包</span>
+            <strong>${Number(state.packageCache?.fileCount || 0)} 个</strong>
+          </div>
+          <div>
+            <span>占用空间</span>
+            <strong>${formatBytes(state.packageCache?.totalSize || 0)}</strong>
+          </div>
+        </div>
+        <div class="settings-path" title="${escapeHtml(state.packageCache?.path || "")}">${escapeHtml(state.packageCache?.path || "AppManagerLibrary/config/package-cache")}</div>
+        <div class="settings-action-row">
+          <button class="ghost-button" data-action="refresh-package-cache">刷新缓存信息</button>
+          <button class="danger-action" data-action="clear-package-cache" ${Number(state.packageCache?.fileCount || 0) ? "" : "disabled"}>清空下载缓存</button>
+        </div>
       </section>
 
       <section class="settings-panel">
@@ -1213,6 +1237,16 @@ async function handleAction(button) {
     return;
   }
 
+  if (action === "refresh-package-cache") {
+    await refreshPackageCache();
+    return;
+  }
+
+  if (action === "clear-package-cache") {
+    await clearPackageCache();
+    return;
+  }
+
   if (action === "download-remote-app") {
     await downloadRemoteApp(button.dataset.appId);
     return;
@@ -1537,6 +1571,36 @@ async function fetchRemoteApps() {
     state.view = "remote";
     showToast(`已获取 ${state.remoteApps.length} 个服务端软件`);
   }, "获取服务端软件失败");
+}
+
+async function refreshPackageCache(options = {}) {
+  if (!state.isTauri) {
+    showToast("浏览器预览模式不会读取下载缓存");
+    return;
+  }
+
+  await runTask(async () => {
+    state.packageCache = await invoke("get_package_cache_info");
+    if (!options.silent) {
+      showToast(`下载缓存：${state.packageCache.fileCount} 个，${formatBytes(state.packageCache.totalSize)}`);
+    }
+  }, "读取下载缓存失败");
+}
+
+async function clearPackageCache() {
+  if (!state.isTauri) {
+    showToast("浏览器预览模式不会清理下载缓存");
+    return;
+  }
+
+  if (!window.confirm("确定要清空下载缓存吗？这不会删除软件库中的真实软件文件，但下次下载大软件时需要重新打包。")) {
+    return;
+  }
+
+  await runTask(async () => {
+    state.packageCache = await invoke("clear_package_cache");
+    showToast("下载缓存已清空");
+  }, "清空下载缓存失败");
 }
 
 async function downloadRemoteApp(appId) {

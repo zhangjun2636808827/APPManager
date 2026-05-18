@@ -300,6 +300,14 @@ struct ServerStatus {
     port: u16,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PackageCacheInfo {
+    path: String,
+    file_count: u64,
+    total_size: u64,
+}
+
 #[derive(Debug)]
 struct HttpResponse {
     status: u16,
@@ -614,6 +622,23 @@ fn update_settings(
 #[tauri::command]
 fn get_server_status() -> Result<ServerStatus, String> {
     Ok(current_server_status())
+}
+
+#[tauri::command]
+fn get_package_cache_info() -> Result<PackageCacheInfo, String> {
+    let library_path = library_root()?;
+    package_cache_info(&library_path)
+}
+
+#[tauri::command]
+fn clear_package_cache() -> Result<PackageCacheInfo, String> {
+    let library_path = library_root()?;
+    let cache_dir = package_cache_dir(&library_path);
+    if cache_dir.exists() {
+        fs::remove_dir_all(&cache_dir).map_err(error_message)?;
+    }
+    fs::create_dir_all(&cache_dir).map_err(error_message)?;
+    package_cache_info(&library_path)
 }
 
 #[tauri::command]
@@ -3159,7 +3184,7 @@ fn package_cache_path(
     signature: &PackageSourceSignature,
     file_name: &str,
 ) -> Result<PathBuf, String> {
-    let cache_dir = library_path.join(CONFIG_DIR).join(PACKAGE_CACHE_DIR);
+    let cache_dir = package_cache_dir(library_path);
     let safe_app_id = sanitize_file_name(app_id);
     let safe_file_name = sanitize_file_name(file_name);
     let cache_key = format!(
@@ -3171,8 +3196,34 @@ fn package_cache_path(
     Ok(cache_dir.join(format!("{safe_app_id}-{cache_key}-{safe_file_name}")))
 }
 
+fn package_cache_dir(library_path: &Path) -> PathBuf {
+    library_path.join(CONFIG_DIR).join(PACKAGE_CACHE_DIR)
+}
+
+fn package_cache_info(library_path: &Path) -> Result<PackageCacheInfo, String> {
+    let cache_dir = package_cache_dir(library_path);
+    fs::create_dir_all(&cache_dir).map_err(error_message)?;
+    let mut file_count = 0u64;
+    let mut total_size = 0u64;
+
+    for entry in fs::read_dir(&cache_dir).map_err(error_message)? {
+        let entry = entry.map_err(error_message)?;
+        let metadata = entry.metadata().map_err(error_message)?;
+        if metadata.is_file() {
+            file_count = file_count.saturating_add(1);
+            total_size = total_size.saturating_add(metadata.len());
+        }
+    }
+
+    Ok(PackageCacheInfo {
+        path: path_to_string(&cache_dir),
+        file_count,
+        total_size,
+    })
+}
+
 fn cleanup_package_cache_for_app(library_path: &Path, app_id: &str) {
-    let cache_dir = library_path.join(CONFIG_DIR).join(PACKAGE_CACHE_DIR);
+    let cache_dir = package_cache_dir(library_path);
     let safe_app_id = sanitize_file_name(app_id);
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
@@ -3979,6 +4030,8 @@ pub fn run() {
             update_app_info,
             update_settings,
             get_server_status,
+            get_package_cache_info,
+            clear_package_cache,
             get_transfer_progress,
             debug_log,
             test_client_connection,
