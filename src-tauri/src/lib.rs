@@ -606,8 +606,6 @@ fn update_app_info(request: UpdateAppInfoRequest) -> Result<AppData, String> {
                 app.executable_candidates.sort();
                 app.executable_candidates.dedup();
             }
-            app.icon_data_url = extract_icon_data_url(&library_path, &app.id, &executable)
-                .or(app.icon_data_url.take());
         }
     }
 
@@ -3974,107 +3972,6 @@ fn is_executable_file(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("exe"))
-}
-
-fn extract_icon_data_url(
-    library_path: &Path,
-    app_id: &str,
-    executable_path: &Path,
-) -> Option<String> {
-    let icon_dir = library_path.join(CONFIG_DIR).join("icons");
-    fs::create_dir_all(&icon_dir).ok()?;
-
-    let icon_path = icon_dir.join(format!("{app_id}.png"));
-    let script = r#"
-Add-Type -AssemblyName System.Drawing
-
-$code = @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class AppManagerIcon {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct SHFILEINFO {
-        public IntPtr hIcon;
-        public int iIcon;
-        public uint dwAttributes;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-        public string szDisplayName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
-        public string szTypeName;
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    public static extern uint ExtractIconEx(string lpszFile, int nIconIndex, IntPtr[] phiconLarge, IntPtr[] phiconSmall, uint nIcons);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern bool DestroyIcon(IntPtr hIcon);
-}
-"@
-
-Add-Type -TypeDefinition $code
-
-$source = $args[0]
-$target = $args[1]
-$handle = [IntPtr]::Zero
-
-$info = New-Object AppManagerIcon+SHFILEINFO
-$size = [Runtime.InteropServices.Marshal]::SizeOf([type][AppManagerIcon+SHFILEINFO])
-$result = [AppManagerIcon]::SHGetFileInfo($source, 0, [ref]$info, [uint32]$size, 0x100)
-if ($result -ne [IntPtr]::Zero -and $info.hIcon -ne [IntPtr]::Zero) {
-    $handle = $info.hIcon
-}
-
-if ($handle -eq [IntPtr]::Zero) {
-    $large = New-Object IntPtr[] 1
-    $small = New-Object IntPtr[] 1
-    [void][AppManagerIcon]::ExtractIconEx($source, 0, $large, $small, 1)
-    if ($large[0] -ne [IntPtr]::Zero) {
-        $handle = $large[0]
-    } elseif ($small[0] -ne [IntPtr]::Zero) {
-        $handle = $small[0]
-    }
-}
-
-if ($handle -eq [IntPtr]::Zero) {
-    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($source)
-    if ($null -eq $icon) { exit 2 }
-    $bitmap = $icon.ToBitmap()
-    $bitmap.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
-    $bitmap.Dispose()
-    $icon.Dispose()
-    exit 0
-}
-
-$iconFromHandle = [System.Drawing.Icon]::FromHandle($handle)
-$bitmapFromHandle = $iconFromHandle.ToBitmap()
-$bitmapFromHandle.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
-$bitmapFromHandle.Dispose()
-[void][AppManagerIcon]::DestroyIcon($handle)
-"#;
-
-    let status = hidden_command("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .arg(native_path_to_string(executable_path))
-        .arg(native_path_to_string(&icon_path))
-        .status()
-        .ok()?;
-
-    if !status.success() || !icon_path.exists() {
-        return None;
-    }
-
-    let bytes = fs::read(icon_path).ok()?;
-    Some(format!("data:image/png;base64,{}", base64_encode(&bytes)))
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
