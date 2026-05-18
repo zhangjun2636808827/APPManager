@@ -411,8 +411,12 @@ h1 {
   box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
 }
 
-.app-card[draggable="true"] {
+.app-card[data-favorite-sort="true"] {
   cursor: grab;
+}
+
+.app-card[data-favorite-sort="true"]:active {
+  cursor: grabbing;
 }
 
 .app-card.dragging {

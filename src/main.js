@@ -1260,6 +1260,21 @@ function bindAppCards() {
     document.querySelectorAll(".app-card.dragging, .app-card.drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
   };
 
+  const updateFavoriteDragTarget = (event) => {
+    if (!state.dragFavoriteId) return null;
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const targetCard = element?.closest?.(".app-card[data-favorite-sort='true']");
+    const targetId = targetCard?.dataset.app || null;
+    document.querySelectorAll(".app-card.drag-over").forEach((item) => item.classList.remove("drag-over"));
+    if (targetId && targetId !== state.dragFavoriteId) {
+      state.dragFavoriteTargetId = targetId;
+      targetCard.classList.add("drag-over");
+      return targetId;
+    }
+    state.dragFavoriteTargetId = null;
+    return null;
+  };
+
   document.querySelectorAll(".app-card").forEach((card) => {
     card.addEventListener("click", async () => {
       if (state.contextMenu) return;
@@ -1280,28 +1295,48 @@ function bindAppCards() {
     if (card.dataset.favoriteSort === "true") {
       card.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) return;
-        state.dragFavoriteId = card.dataset.app;
-        state.dragFavoriteTargetId = null;
-        state.suppressLaunchUntil = Date.now() + 1200;
-        card.setPointerCapture?.(event.pointerId);
-        card.classList.add("dragging");
-      });
+        const sourceId = card.dataset.app;
+        const startX = event.clientX;
+        const startY = event.clientY;
+        let dragging = false;
 
-      card.addEventListener("pointerenter", () => {
-        if (!state.dragFavoriteId || state.dragFavoriteId === card.dataset.app) return;
-        state.dragFavoriteTargetId = card.dataset.app;
-        document.querySelectorAll(".app-card.drag-over").forEach((item) => item.classList.remove("drag-over"));
-        card.classList.add("drag-over");
-      });
+        const handlePointerMove = (moveEvent) => {
+          const distance = Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY);
+          if (!dragging && distance < 6) return;
+          if (!dragging) {
+            dragging = true;
+            state.dragFavoriteId = sourceId;
+            state.dragFavoriteTargetId = null;
+            state.suppressLaunchUntil = Date.now() + 1200;
+            card.classList.add("dragging");
+          }
+          moveEvent.preventDefault();
+          updateFavoriteDragTarget(moveEvent);
+        };
 
-      card.addEventListener("pointerup", async (event) => {
-        const sourceId = state.dragFavoriteId;
-        const targetId = state.dragFavoriteTargetId || card.dataset.app;
-        card.releasePointerCapture?.(event.pointerId);
-        finishFavoritePointerDrag();
-        if (sourceId && targetId && sourceId !== targetId) {
-          await reorderFavoriteApps(sourceId, targetId);
-        }
+        const handlePointerUp = async (upEvent) => {
+          window.removeEventListener("pointermove", handlePointerMove);
+          window.removeEventListener("pointerup", handlePointerUp);
+          window.removeEventListener("pointercancel", handlePointerCancel);
+          if (!dragging) return;
+
+          const targetId = updateFavoriteDragTarget(upEvent) || state.dragFavoriteTargetId;
+          finishFavoritePointerDrag();
+          if (sourceId && targetId && sourceId !== targetId) {
+            await reorderFavoriteApps(sourceId, targetId);
+          }
+        };
+
+        const handlePointerCancel = () => {
+          window.removeEventListener("pointermove", handlePointerMove);
+          window.removeEventListener("pointerup", handlePointerUp);
+          window.removeEventListener("pointercancel", handlePointerCancel);
+          finishFavoritePointerDrag();
+        };
+
+        window.addEventListener("pointermove", handlePointerMove, { passive: false });
+        window.addEventListener("pointerup", handlePointerUp);
+        window.addEventListener("pointercancel", handlePointerCancel);
       });
 
       card.addEventListener("pointercancel", finishFavoritePointerDrag);
