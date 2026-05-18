@@ -28,6 +28,7 @@ const CONFIG_DIR: &str = "config";
 const DATA_FILE: &str = "app-data.json";
 const REVIEW_DIR: &str = "未审核软件";
 const REVIEW_FOLDER: &str = "review-pending";
+const PACKAGE_CACHE_DIR: &str = "package-cache";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ZIP_BUFFER_SIZE: usize = 64 * 1024;
@@ -1863,6 +1864,7 @@ fn prepare_download_file_internal(
     app: &ManagedApp,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(PathBuf, String), String> {
+    let library_path = library_root()?;
     let folder_path = PathBuf::from(normalize_incoming_path(&app.folder_path));
 
     let source_path = if folder_path.is_dir() {
@@ -1890,6 +1892,29 @@ fn prepare_download_file_internal(
         .and_then(|value| value.to_str())
         .unwrap_or(&app.name);
     let file_name = format!("{}.zip", sanitize_file_name(package_name));
+    let source_signature = package_source_signature(&source_path)?;
+    let cache_path = package_cache_path(&library_path, &app.id, &source_signature, &file_name)?;
+    if cache_path.exists() {
+        log_debug(&format!(
+            "download package cache hit app_id={} source={} cache={}",
+            app.id,
+            native_path_to_string(&source_path),
+            native_path_to_string(&cache_path)
+        ));
+        emit_transfer_progress(
+            app_handle,
+            "download",
+            &app.id,
+            &app.name,
+            source_signature.total_bytes,
+            source_signature.total_bytes,
+            Instant::now(),
+            "packing",
+        );
+        return Ok((cache_path, file_name));
+    }
+
+    cleanup_package_cache_for_app(&library_path, &app.id);
     let zip_path = std::env::temp_dir().join(format!(
         "appmanager-{}-{}-{file_name}",
         app.id,
@@ -1906,7 +1931,12 @@ fn prepare_download_file_internal(
         app_name: &app.name,
         status: "packing",
     };
-    if let Err(error) = create_stored_zip(&source_path, &zip_path, Some(progress)) {
+    if let Err(error) = create_stored_zip(
+        &source_path,
+        &zip_path,
+        Some(progress),
+        Some(&source_signature),
+    ) {
         let _ = fs::remove_file(&zip_path);
         return Err(format!(
             "打包软件失败：{}：{}",
@@ -1915,7 +1945,22 @@ fn prepare_download_file_internal(
         ));
     }
 
-    Ok((zip_path, file_name))
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(error_message)?;
+    }
+    fs::rename(&zip_path, &cache_path)
+        .or_else(|_| {
+            fs::copy(&zip_path, &cache_path)?;
+            fs::remove_file(&zip_path)
+        })
+        .map_err(error_message)?;
+    log_debug(&format!(
+        "download package cache saved app_id={} cache={}",
+        app.id,
+        native_path_to_string(&cache_path)
+    ));
+
+    Ok((cache_path, file_name))
 }
 
 fn load_server_data() -> Result<AppData, String> {
@@ -2921,6 +2966,7 @@ fn create_stored_zip(
     source_path: &Path,
     zip_path: &Path,
     progress: Option<ZipProgress<'_>>,
+    source_signature: Option<&PackageSourceSignature>,
 ) -> Result<(), String> {
     if let Some(parent) = zip_path.parent() {
         fs::create_dir_all(parent).map_err(error_message)?;
@@ -2934,11 +2980,14 @@ fn create_stored_zip(
     let base_parent = source_path
         .parent()
         .ok_or_else(|| "无法读取软件文件夹名".to_string())?;
-    let mut files = Vec::new();
-    collect_zip_files(source_path, &mut files)?;
-    files.sort();
+    let files = match source_signature {
+        Some(signature) => signature.files.clone(),
+        None => package_source_signature(source_path)?.files,
+    };
     let file_count = files.len();
-    let total_bytes = total_file_size(&files)?;
+    let total_bytes = source_signature
+        .map(|signature| signature.total_bytes)
+        .unwrap_or_else(|| files.iter().map(|file| file.len).sum());
     log_debug(&format!(
         "zip create collected source={} files={} total_bytes={}",
         native_path_to_string(source_path),
@@ -2971,11 +3020,11 @@ fn create_stored_zip(
     let mut last_emit = Instant::now();
     let mut packed_bytes = 0u64;
 
-    for file_path in files {
-        let entry_name = zip_entry_name(base_parent, &file_path)?;
+    for file in files {
+        let entry_name = zip_entry_name(base_parent, &file.path)?;
         zip.start_file(entry_name, options).map_err(error_message)?;
 
-        let mut input = fs::File::open(&file_path).map_err(error_message)?;
+        let mut input = fs::File::open(&file.path).map_err(error_message)?;
         loop {
             let count = input.read(&mut buffer).map_err(error_message)?;
             if count == 0 {
@@ -3018,9 +3067,43 @@ fn create_stored_zip(
     Ok(())
 }
 
-fn collect_zip_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+#[derive(Debug, Clone)]
+struct PackageSourceFile {
+    path: PathBuf,
+    len: u64,
+    modified_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+struct PackageSourceSignature {
+    files: Vec<PackageSourceFile>,
+    total_bytes: u64,
+    signature_hash: u64,
+}
+
+fn package_source_signature(path: &Path) -> Result<PackageSourceSignature, String> {
+    let mut files = Vec::new();
+    collect_package_source_files(path, &mut files)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let total_bytes = files
+        .iter()
+        .fold(0u64, |total, file| total.saturating_add(file.len));
+    let signature_hash = package_source_hash(&files);
+
+    Ok(PackageSourceSignature {
+        files,
+        total_bytes,
+        signature_hash,
+    })
+}
+
+fn collect_package_source_files(
+    path: &Path,
+    files: &mut Vec<PackageSourceFile>,
+) -> Result<(), String> {
     if path.is_file() {
-        files.push(path.to_path_buf());
+        files.push(package_source_file(path)?);
         return Ok(());
     }
 
@@ -3029,21 +3112,81 @@ fn collect_zip_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
         let entry_path = entry.path();
         let file_type = entry.file_type().map_err(error_message)?;
         if file_type.is_dir() {
-            collect_zip_files(&entry_path, files)?;
+            collect_package_source_files(&entry_path, files)?;
         } else if file_type.is_file() {
-            files.push(entry_path);
+            files.push(package_source_file(&entry_path)?);
         }
     }
 
     Ok(())
 }
 
-fn total_file_size(files: &[PathBuf]) -> Result<u64, String> {
-    let mut total = 0u64;
+fn package_source_file(path: &Path) -> Result<PackageSourceFile, String> {
+    let metadata = fs::metadata(path).map_err(error_message)?;
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    Ok(PackageSourceFile {
+        path: path.to_path_buf(),
+        len: metadata.len(),
+        modified_ms,
+    })
+}
+
+fn package_source_hash(files: &[PackageSourceFile]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
     for file in files {
-        total = total.saturating_add(fs::metadata(file).map_err(error_message)?.len());
+        update_package_hash(&mut hash, native_path_to_string(&file.path).as_bytes());
+        update_package_hash(&mut hash, &file.len.to_le_bytes());
+        update_package_hash(&mut hash, &file.modified_ms.to_le_bytes());
     }
-    Ok(total)
+    hash
+}
+
+fn update_package_hash(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+}
+
+fn package_cache_path(
+    library_path: &Path,
+    app_id: &str,
+    signature: &PackageSourceSignature,
+    file_name: &str,
+) -> Result<PathBuf, String> {
+    let cache_dir = library_path.join(CONFIG_DIR).join(PACKAGE_CACHE_DIR);
+    let safe_app_id = sanitize_file_name(app_id);
+    let safe_file_name = sanitize_file_name(file_name);
+    let cache_key = format!(
+        "{}-{}-{:016x}",
+        signature.files.len(),
+        signature.total_bytes,
+        signature.signature_hash
+    );
+    Ok(cache_dir.join(format!("{safe_app_id}-{cache_key}-{safe_file_name}")))
+}
+
+fn cleanup_package_cache_for_app(library_path: &Path, app_id: &str) {
+    let cache_dir = library_path.join(CONFIG_DIR).join(PACKAGE_CACHE_DIR);
+    let safe_app_id = sanitize_file_name(app_id);
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if file_name.starts_with(&format!("{safe_app_id}-")) {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn zip_entry_name(base_parent: &Path, file_path: &Path) -> Result<String, String> {

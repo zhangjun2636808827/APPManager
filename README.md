@@ -348,6 +348,14 @@ packing -> running -> extracting -> installing -> done
 
 其中 `packing` 表示服务端正在打包软件，`running` 表示客户端正在接收文件。
 
+对于体积很大、且包含大量小文件的软件，首次下载仍需要进行一次打包。打包完成后，服务端会把生成的 zip 缓存在：
+
+```text
+AppManagerLibrary/config/package-cache/
+```
+
+下次下载同一个软件时，如果文件数量、文件大小、修改时间和文件路径签名没有变化，会直接复用缓存包，跳过最耗时的重新打包阶段。如果软件目录发生变化，缓存会自动失效并重新打包。
+
 ## 项目结构
 
 ```text
