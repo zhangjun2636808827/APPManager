@@ -30,6 +30,7 @@ const DATA_FILE: &str = "app-data.json";
 const REVIEW_DIR: &str = "未审核软件";
 const REVIEW_FOLDER: &str = "review-pending";
 const PACKAGE_CACHE_DIR: &str = "package-cache";
+const APP_ICON_FILE_STEM: &str = ".appmanager-icon";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ZIP_BUFFER_SIZE: usize = 64 * 1024;
@@ -1280,33 +1281,33 @@ fn validate_image_data_url(value: &str) -> Result<String, String> {
         return Err("图标图片不能超过 4 MB".to_string());
     }
 
-    let Some((mime, payload)) = clean_value.split_once(";base64,") else {
-        return Err("图标图片格式无效".to_string());
-    };
-
-    let valid_mime = matches!(
-        mime,
-        "data:image/png"
-            | "data:image/jpeg"
-            | "data:image/gif"
-            | "data:image/webp"
-            | "data:image/x-icon"
-            | "data:image/vnd.microsoft.icon"
-            | "data:image/bmp"
-    );
-    if !valid_mime {
-        return Err("图标仅支持 png、jpg、jpeg、gif、webp、ico、bmp".to_string());
-    }
-
-    if payload.is_empty()
-        || !payload
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
-    {
-        return Err("图标图片内容无效".to_string());
-    }
+    decode_image_data_url(clean_value)?;
 
     Ok(clean_value.to_string())
+}
+
+fn decode_image_data_url(value: &str) -> Result<(&str, Vec<u8>), String> {
+    let Some((mime, payload)) = value.trim().split_once(";base64,") else {
+        return Err("图标图片格式无效".to_string());
+    };
+    icon_extension_from_mime(mime)?;
+    let bytes = base64_decode(payload)?;
+    if bytes.is_empty() {
+        return Err("图标图片内容无效".to_string());
+    }
+    Ok((mime, bytes))
+}
+
+fn icon_extension_from_mime(mime: &str) -> Result<&'static str, String> {
+    match mime {
+        "data:image/png" => Ok("png"),
+        "data:image/jpeg" => Ok("jpg"),
+        "data:image/gif" => Ok("gif"),
+        "data:image/webp" => Ok("webp"),
+        "data:image/x-icon" | "data:image/vnd.microsoft.icon" => Ok("ico"),
+        "data:image/bmp" => Ok("bmp"),
+        _ => Err("图标仅支持 png、jpg、jpeg、gif、webp、ico、bmp".to_string()),
+    }
 }
 
 fn set_windows_autostart(enabled: bool) -> Result<(), String> {
@@ -4043,6 +4044,58 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
+fn base64_decode(value: &str) -> Result<Vec<u8>, String> {
+    let clean_value = value.trim();
+    if clean_value.is_empty() || clean_value.len() % 4 != 0 {
+        return Err("图标图片内容无效".to_string());
+    }
+
+    let mut output = Vec::with_capacity(clean_value.len() / 4 * 3);
+    let bytes = clean_value.as_bytes();
+    let chunk_count = bytes.len() / 4;
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let is_last = index + 1 == chunk_count;
+        let pad = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if pad > 2 || (!is_last && pad > 0) {
+            return Err("图标图片内容无效".to_string());
+        }
+
+        let mut value24 = 0u32;
+        for (offset, byte) in chunk.iter().enumerate() {
+            let six_bits = if *byte == b'=' {
+                if !is_last || offset < 2 {
+                    return Err("图标图片内容无效".to_string());
+                }
+                0
+            } else {
+                base64_value(*byte).ok_or_else(|| "图标图片内容无效".to_string())?
+            };
+            value24 = (value24 << 6) | u32::from(six_bits);
+        }
+
+        output.push(((value24 >> 16) & 0xff) as u8);
+        if pad < 2 {
+            output.push(((value24 >> 8) & 0xff) as u8);
+        }
+        if pad < 1 {
+            output.push((value24 & 0xff) as u8);
+        }
+    }
+
+    Ok(output)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
 fn collect_executables(
     folder: &Path,
     executables: &mut Vec<PathBuf>,
@@ -4129,14 +4182,65 @@ fn load_or_create_data(library_path: &Path) -> Result<AppData, String> {
     }
 
     let content = fs::read_to_string(&data_path).map_err(error_message)?;
-    serde_json::from_str(&content).map_err(error_message)
+    let mut data: AppData = serde_json::from_str(&content).map_err(error_message)?;
+    hydrate_icon_data_urls(&mut data);
+    Ok(data)
 }
 
 fn save_data(library_path: &Path, data: &AppData) -> Result<(), String> {
     let config_path = library_path.join(CONFIG_DIR);
     fs::create_dir_all(config_path).map_err(error_message)?;
-    let content = serde_json::to_string_pretty(data).map_err(error_message)?;
+    let mut data_to_save = data.clone();
+    persist_icon_references(library_path, &mut data_to_save)?;
+    let content = serde_json::to_string_pretty(&data_to_save).map_err(error_message)?;
     fs::write(data_path(library_path), content).map_err(error_message)
+}
+
+fn persist_icon_references(library_path: &Path, data: &mut AppData) -> Result<(), String> {
+    for app in &mut data.apps {
+        let Some(icon_value) = app.icon_data_url.as_deref() else {
+            continue;
+        };
+        if !icon_value.starts_with("data:image/") {
+            continue;
+        }
+
+        let folder_path = PathBuf::from(normalize_incoming_path(&app.folder_path));
+        ensure_inside_apps_dir(library_path, &folder_path)?;
+        fs::create_dir_all(&folder_path).map_err(error_message)?;
+
+        let (mime, bytes) = decode_image_data_url(icon_value)?;
+        let extension = icon_extension_from_mime(mime)?;
+        remove_existing_app_icon_files(&folder_path)?;
+        let icon_path = folder_path.join(format!("{APP_ICON_FILE_STEM}.{extension}"));
+        fs::write(&icon_path, bytes).map_err(error_message)?;
+        app.icon_data_url = Some(path_to_string(&icon_path));
+    }
+    Ok(())
+}
+
+fn hydrate_icon_data_urls(data: &mut AppData) {
+    for app in &mut data.apps {
+        let Some(icon_value) = app.icon_data_url.as_deref() else {
+            continue;
+        };
+        if icon_value.starts_with("data:image/") {
+            continue;
+        }
+
+        app.icon_data_url = read_image_as_data_url(icon_value).ok();
+    }
+}
+
+fn remove_existing_app_icon_files(folder_path: &Path) -> Result<(), String> {
+    let extensions = ["png", "jpg", "gif", "webp", "ico", "bmp"];
+    for extension in extensions {
+        let path = folder_path.join(format!("{APP_ICON_FILE_STEM}.{extension}"));
+        if path.exists() {
+            fs::remove_file(path).map_err(error_message)?;
+        }
+    }
+    Ok(())
 }
 
 fn library_root() -> Result<PathBuf, String> {
