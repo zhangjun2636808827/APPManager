@@ -70,59 +70,119 @@ AppManager 是一个面向 Windows 的本地软件管理与启动工具。它可
 
 ## 架构预览
 
-AppManager 由前端界面、Tauri 命令层、本地软件库和局域网传输服务组成。前端负责状态展示和用户操作，Rust 后端负责文件扫描、软件启动、配置读写、服务端 HTTP 接口和客户端传输。
+AppManager 由前端界面、Tauri 命令层、Rust 核心逻辑、本地软件库和局域网传输模块组成。前端负责状态展示和用户交互，Rust 后端负责文件扫描、软件启动、配置读写、内置 HTTP 服务和客户端传输。
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Microsoft YaHei, sans-serif", "primaryColor": "#eff6ff", "primaryBorderColor": "#2563eb", "primaryTextColor": "#1f2937", "lineColor": "#64748b", "tertiaryColor": "#f8fafc"}}}%%
 flowchart LR
-  User["用户"]
-  UI["前端界面<br/>src/main.js + styles.css"]
-  Tauri["Tauri 命令层"]
-  Core["Rust 核心逻辑<br/>src-tauri/src/lib.rs"]
-  Library["AppManagerLibrary<br/>Apps + config/app-data.json"]
-  Server["内置 HTTP 服务端<br/>软件列表 / 下载 / 上传 / 进度"]
-  Client["客户端传输模块<br/>连接远程 AppManager"]
-  Remote["局域网内另一台 AppManager"]
+  User["用户<br/>管理 / 启动 / 传输软件"]
+
+  subgraph Desktop["AppManager 桌面端"]
+    direction LR
+    UI["前端界面<br/>Vite + JavaScript + CSS"]
+    Bridge["Tauri 命令桥接<br/>invoke / event"]
+    Core["Rust 核心逻辑<br/>扫描 / 启动 / 配置 / 压缩"]
+  end
+
+  subgraph Local["本地数据层"]
+    Library["AppManagerLibrary"]
+    Apps["Apps<br/>分类目录与真实软件文件"]
+    Config["config/app-data.json<br/>分类 / 软件 / 设置"]
+  end
+
+  subgraph LAN["局域网能力"]
+    Server["服务端模式<br/>软件列表 / 下载 / 上传 / 进度"]
+    Client["客户端模式<br/>连接远程服务端"]
+    Remote["另一台 AppManager<br/>同一局域网设备"]
+  end
 
   User --> UI
-  UI --> Tauri
-  Tauri --> Core
+  UI --> Bridge
+  Bridge --> Core
   Core --> Library
+  Library --> Apps
+  Library --> Config
   Core --> Server
   Core --> Client
   Server <--> Remote
   Client <--> Remote
+
+  classDef user fill:#fef3c7,stroke:#d97706,color:#78350f;
+  classDef desktop fill:#eff6ff,stroke:#2563eb,color:#1e3a8a;
+  classDef storage fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  classDef network fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95;
+  class User user;
+  class UI,Bridge,Core desktop;
+  class Library,Apps,Config storage;
+  class Server,Client,Remote network;
 ```
 
 ### 本地模式流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Microsoft YaHei, sans-serif", "primaryColor": "#f8fafc", "primaryBorderColor": "#64748b", "lineColor": "#64748b"}}}%%
 flowchart TD
-  A["创建分类"] --> B["把软件文件夹放入分类目录"]
-  B --> C["扫描分类"]
-  C --> D["识别 .exe 启动程序"]
-  D --> E["写入 app-data.json"]
-  E --> F["在界面中启动、收藏、编辑或移动软件"]
+  Start(["开始整理软件库"])
+  Category["创建分类<br/>例如：开发工具 / 办公软件"]
+  PutFiles["放入软件文件夹或 .exe<br/>AppManagerLibrary/Apps/分类名/"]
+  Scan["扫描分类<br/>遍历目录和文件"]
+  Detect{"是否识别到<br/>可启动 .exe？"}
+  Single["自动设置启动程序"]
+  Multiple["记录候选程序<br/>后续手动选择主程序"]
+  None["记录扫描问题<br/>提示未找到 .exe"]
+  Save["写入 app-data.json"]
+  Use["启动 / 收藏 / 搜索 / 编辑 / 移动"]
+
+  Start --> Category --> PutFiles --> Scan --> Detect
+  Detect -->|"一个明确结果"| Single --> Save
+  Detect -->|"多个候选"| Multiple --> Save
+  Detect -->|"未找到"| None --> Save
+  Save --> Use
+
+  classDef start fill:#fef3c7,stroke:#d97706,color:#78350f;
+  classDef action fill:#eff6ff,stroke:#2563eb,color:#1e3a8a;
+  classDef decision fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
+  classDef data fill:#ecfdf5,stroke:#059669,color:#064e3b;
+  class Start start;
+  class Category,PutFiles,Scan,Single,Multiple,None,Use action;
+  class Detect decision;
+  class Save data;
 ```
 
 ### 局域网传输流程
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Segoe UI, Microsoft YaHei, sans-serif", "actorBkg": "#eff6ff", "actorBorder": "#2563eb", "actorTextColor": "#1e3a8a", "activationBkgColor": "#dbeafe", "activationBorderColor": "#2563eb", "signalColor": "#475569", "signalTextColor": "#334155", "noteBkgColor": "#fef3c7", "noteTextColor": "#78350f"}}}%%
 sequenceDiagram
-  participant Client as 客户端 AppManager
-  participant Server as 服务端 AppManager
-  participant Library as 服务端软件库
+  autonumber
+  participant C as 客户端 AppManager
+  participant S as 服务端 AppManager
+  participant L as 服务端软件库
+  participant R as 未审核区
 
-  Client->>Server: 请求远程软件列表
-  Server->>Client: 返回软件列表
-  Client->>Server: 请求下载软件
-  Server->>Library: 打包目标软件
-  Server->>Client: 发送打包进度 packing
-  Server->>Client: 传输 zip 文件 running
-  Client->>Client: 解压 extracting
-  Client->>Client: 写入本地软件库 installing
-  Client->>Server: 上传本地软件
-  Server->>Library: 保存到未审核目录
-  Server->>Server: 管理员通过或拒绝
+  rect rgb(239, 246, 255)
+    C->>S: 测试连接 / 获取远程软件列表
+    S->>L: 读取分类、软件与权限配置
+    L-->>S: 返回可下载软件
+    S-->>C: 返回远程软件列表
+  end
+
+  rect rgb(236, 253, 245)
+    C->>S: 请求下载目标软件
+    S->>L: 打包软件目录或单个 exe
+    S-->>C: packing 进度
+    S-->>C: running 传输 zip
+    C->>C: extracting 解压
+    C->>C: installing 写入本地软件库
+  end
+
+  rect rgb(245, 243, 255)
+    C->>S: 上传本地软件
+    S->>R: 保存上传文件并登记待审核
+    S-->>C: upload 进度与结果
+    S->>R: 管理员通过或拒绝
+    R->>L: 通过后移动到正式分类
+  end
 ```
 
 架构图片也可以后续手动导出成静态图，建议保存到：
@@ -131,6 +191,18 @@ sequenceDiagram
 docs/images/architecture.png
 docs/images/local-flow.png
 docs/images/transfer-flow.png
+```
+
+如果后续要用 AI 生成一张更适合 README 首屏展示的架构海报，可以使用下面这段提示词。生成后建议保存为 `docs/images/architecture-ai.png`，再在本节顶部引用。
+
+```text
+Create a clean modern architecture diagram for a Windows desktop app named AppManager.
+Style: polished technical documentation infographic, light theme, flat vector look, crisp labels, no 3D, no decoration.
+Canvas: 16:9 landscape.
+Show these modules: User, Frontend UI (Vite + JavaScript + CSS), Tauri Command Bridge, Rust Core, AppManagerLibrary, Apps folders, config/app-data.json, LAN Server Mode, LAN Client Mode, Remote AppManager.
+Show the flow: User -> Frontend UI -> Tauri Bridge -> Rust Core -> Local Library; Rust Core also connects to Server Mode and Client Mode; Server/Client communicate with Remote AppManager over LAN.
+Use readable boxes, grouped sections, blue for desktop layer, green for local storage, purple for LAN transfer, amber for user.
+Text must be concise and legible. Avoid tiny text, shadows, gradients, watermarks, logos, or fake UI screenshots.
 ```
 
 ## 技术栈
