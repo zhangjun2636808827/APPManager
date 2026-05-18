@@ -82,7 +82,7 @@ async function boot() {
     try {
       await setupTransferListener();
     } catch (error) {
-      console.warn("transfer listener unavailable", error);
+      debugLog(`transfer listener unavailable error=${formatDebugError(error)}`);
     }
   }
 
@@ -646,7 +646,7 @@ function renderSettingsPage() {
           </label>
           <label class="field compact-field">
             密码
-            <input type="text" value="${escapeHtml(state.serverPassword)}" data-role="server-password" />
+            <input type="password" autocomplete="off" value="${escapeHtml(state.serverPassword)}" data-role="server-password" />
           </label>
         </div>
         <label class="toggle-row">
@@ -679,7 +679,7 @@ function renderSettingsPage() {
           </label>
           <label class="field compact-field">
             密码
-            <input type="text" value="${escapeHtml(state.clientPassword)}" data-role="client-password" />
+            <input type="password" autocomplete="off" value="${escapeHtml(state.clientPassword)}" data-role="client-password" />
           </label>
         </div>
         <div class="settings-action-row">
@@ -873,47 +873,6 @@ function renderTransferAppRow(item, direction) {
   `;
 }
 
-function renderInlineTransferLegacy(item) {
-  const transfer = getTransfer("download", item.id);
-  if (!transfer) return `<div class="inline-transfer idle"><span>等待下载</span></div>`;
-  const status = transferStatusText(transfer);
-  const percent = Number(transfer.percent || 0);
-  const transferred = Number(transfer.transferred || 0);
-  const total = Number(transfer.total || 0);
-  const speed = Number(transfer.speed || 0);
-  const sizeText = total > 0
-    ? `${formatBytes(transferred)} / ${formatBytes(total)}`
-    : transferred > 0
-      ? `${formatBytes(transferred)} / 计算中`
-      : "等待文件大小";
-  const speedText = transfer.status === "packing"
-    ? "准备中"
-    : transfer.status === "extracting"
-      ? "正在解压"
-      : transfer.status === "installing"
-        ? "正在入库"
-        : transfer.status === "done"
-          ? "完成"
-          : speed > 0
-            ? `${formatBytes(speed)}/s`
-            : "连接中";
-  return `
-    <div class="inline-transfer">
-      <div class="inline-transfer-row">
-        <strong>${status}</strong>
-        <span>${percent.toFixed(1)}%</span>
-      </div>
-      <div class="inline-transfer-bar">
-        <i style="width:${Math.max(0, Math.min(100, percent))}%"></i>
-      </div>
-      <div class="inline-transfer-meta">
-        <span>${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}</span>
-        <span>${transfer.status === "packing" ? "准备中" : transfer.speed ? `${formatBytes(transfer.speed)}/s` : transfer.status === "done" ? "完成" : "处理中"}</span>
-      </div>
-    </div>
-  `;
-}
-
 function renderInlineTransfer(item, direction = "download") {
   const transfer = getTransfer(direction, item.id);
   if (!transfer) {
@@ -1041,17 +1000,6 @@ function getTransfer(direction, appId) {
 
 function isTransferActive(transfer) {
   return transfer && !["done", "error"].includes(transfer.status);
-}
-
-function transferStatusTextLegacy(transfer) {
-  if (!transfer) return "";
-  if (transfer.status === "packing") return "正在打包";
-  if (transfer.status === "running") return "正在传输";
-  if (transfer.status === "extracting") return "正在解压";
-  if (transfer.status === "installing") return "正在扫描入库";
-  if (transfer.status === "done") return "已完成";
-  if (transfer.status === "error") return "下载失败";
-  return "准备中";
 }
 
 function renderContextMenu() {

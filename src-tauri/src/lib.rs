@@ -1,5 +1,6 @@
 use pinyin::ToPinyin;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::{
     ffi::OsStr,
@@ -646,14 +647,14 @@ fn update_settings(
     data.settings.client.port = request.client_port;
     data.settings.client.username = request.client_username.trim().to_string();
 
-    if !request.server_password.trim().is_empty() {
-        data.settings.server.password = request.server_password.trim().to_string();
-        data.settings.server.password_hash = make_id(request.server_password.trim());
-    }
-
-    if !request.client_password.trim().is_empty() {
-        data.settings.client.password = request.client_password.trim().to_string();
-    }
+    let server_password = request.server_password.trim();
+    data.settings.server.password = server_password.to_string();
+    data.settings.server.password_hash = if server_password.is_empty() {
+        String::new()
+    } else {
+        make_id(server_password)
+    };
+    data.settings.client.password = request.client_password.trim().to_string();
 
     save_data(&library_path, &data)?;
     sync_server(&data.settings, &app_handle)?;
@@ -1037,7 +1038,7 @@ fn upload_app_to_server_inner(
         &app,
         &upload_path,
         &file_name,
-        &app_handle,
+        app_handle,
     );
     if upload_path.starts_with(std::env::temp_dir()) {
         let _ = fs::remove_file(upload_path);
@@ -1284,7 +1285,7 @@ fn recent_server_clients() -> Vec<ServerClientInfo> {
     for client in &mut values {
         client.online = client.last_seen_at >= online_cutoff;
     }
-    values.sort_by(|left, right| right.last_seen_at.cmp(&left.last_seen_at));
+    values.sort_by_key(|client| Reverse(client.last_seen_at));
     values.truncate(12);
     values
 }
@@ -2161,12 +2162,13 @@ fn write_json_response(stream: &mut TcpStream, status: u16, body: &str) {
 
     let response = format!(
         "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.as_bytes().len(),
+        body.len(),
         body
     );
     let _ = stream.write_all(response.as_bytes());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_transfer_progress(
     app_handle: Option<&tauri::AppHandle>,
     direction: &str,
@@ -2230,11 +2232,10 @@ fn calculate_transfer_speed(key: &str, transferred: u64, status: &str) -> u64 {
         Some(previous) if transferred >= previous.transferred && now_ms > previous.timestamp_ms => {
             let delta_bytes = transferred - previous.transferred;
             let delta_ms = now_ms - previous.timestamp_ms;
-            if delta_ms == 0 {
-                previous.speed
-            } else {
-                ((delta_bytes as u128 * 1000) / delta_ms) as u64
-            }
+            (delta_bytes as u128 * 1000)
+                .checked_div(delta_ms)
+                .map(|value| value as u64)
+                .unwrap_or(previous.speed)
         }
         Some(previous) => previous.speed,
         None => 0,
@@ -2551,8 +2552,11 @@ fn client_get_to_file(
         let count = match stream.read(&mut chunk) {
             Ok(count) => count,
             Err(error)
-                if !headers_complete && error.kind() == std::io::ErrorKind::WouldBlock
-                    || !headers_complete && error.kind() == std::io::ErrorKind::TimedOut =>
+                if !headers_complete
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
             {
                 if last_pack_poll.elapsed().as_millis() >= 500 {
                     poll_remote_pack_progress(
@@ -2993,7 +2997,7 @@ fn list_review_items(library_path: &Path) -> Result<Vec<ReviewItem>, String> {
         });
     }
 
-    items.sort_by(|left, right| right.uploaded_at.cmp(&left.uploaded_at));
+    items.sort_by_key(|item| Reverse(item.uploaded_at));
     Ok(items)
 }
 
