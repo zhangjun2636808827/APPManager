@@ -736,7 +736,7 @@ function renderSettingsPage() {
           <button class="ghost-button" data-action="test-client">测试连接</button>
           <button class="ghost-button" data-action="fetch-remote-apps">获取服务端软件列表</button>
         </div>
-        ${renderRemoteApps()}
+        ${renderRemoteSettingsSummary()}
       </section>
 
       <section class="settings-panel">
@@ -748,7 +748,7 @@ function renderSettingsPage() {
           <button class="ghost-button" data-action="refresh-review-apps">刷新未审核列表</button>
           <button class="ghost-button" data-action="open-review-folder">打开未审核目录</button>
         </div>
-        ${renderReviewApps()}
+        ${renderReviewSettingsSummary()}
       </section>
 
       <section class="settings-panel">
@@ -802,6 +802,31 @@ function renderThemeOption(value, title, description) {
   `;
 }
 
+function renderRemoteSettingsSummary() {
+  if (isLocalMode()) {
+    return `<div class="remote-empty">当前为本地模式，远程连接功能已关闭。</div>`;
+  }
+  if (isServerMode()) {
+    return `<div class="remote-empty">当前为服务端模式，客户端连接功能未启用。</div>`;
+  }
+  return `
+    <div class="remote-empty">
+      已缓存 ${state.remoteApps.length} 个服务端软件。完整列表请在“远程连接”界面查看。
+    </div>
+  `;
+}
+
+function renderReviewSettingsSummary() {
+  if (!isServerMode()) {
+    return `<div class="remote-empty">当前不是服务端模式，未审核软件功能未启用。</div>`;
+  }
+  return `
+    <div class="remote-empty">
+      当前有 ${state.reviewApps.length} 个待审核上传。完整列表请在“远程连接”界面查看。
+    </div>
+  `;
+}
+
 function renderRemoteApps(source = "settings") {
   if (isLocalMode()) {
     const content = `<div class="remote-empty">当前为本地模式，远程连接功能已关闭。</div>`;
@@ -836,6 +861,18 @@ function renderRemoteApps(source = "settings") {
         `).join("")}
       </div>
     `;
+  const reviewContent = isServerMode()
+    ? `
+      <section class="connected-clients">
+        <h3>未审核软件</h3>
+        <div class="settings-action-row">
+          <button class="ghost-button" data-action="refresh-review-apps">刷新未审核列表</button>
+          <button class="ghost-button" data-action="open-review-folder">打开未审核目录</button>
+        </div>
+        ${renderReviewApps()}
+      </section>
+    `
+    : "";
 
   if (source === "menu") {
     return `
@@ -848,6 +885,7 @@ function renderRemoteApps(source = "settings") {
           </div>
         ` : ""}
         ${content}
+        ${reviewContent}
       </div>
     `;
   }
