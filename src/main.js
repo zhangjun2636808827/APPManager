@@ -1134,6 +1134,10 @@ function renderContextMenu() {
         <span>▶</span>
         打开
       </button>
+      <button data-action="launch-admin" data-app-id="${item.id}">
+        <span>◇</span>
+        以管理员身份运行
+      </button>
       <button data-action="reveal" data-path="${escapeHtml(item.folderPath)}">
         <span>□</span>
         打开所在目录
@@ -1683,6 +1687,11 @@ async function handleAction(button) {
     return;
   }
 
+  if (action === "launch-admin") {
+    await launchApp(button.dataset.appId, true);
+    return;
+  }
+
   if (action === "reveal") {
     await reveal(button.dataset.path);
     return;
@@ -2226,17 +2235,17 @@ async function rejectReviewApp(reviewId) {
   }, "拒绝软件失败");
 }
 
-async function launchApp(appId) {
+async function launchApp(appId, asAdmin = false) {
   if (!state.isTauri) {
     showToast("浏览器预览模式不会启动真实软件");
     return;
   }
 
   await runTask(async () => {
-    const data = await invoke("launch_app", { appId });
+    const data = await invoke(asAdmin ? "launch_app_as_admin" : "launch_app", { appId });
     applyData(data);
-    showToast("已发送启动命令");
-  }, "启动失败");
+    showToast(asAdmin ? "正在请求管理员权限启动" : "已发送启动命令");
+  }, asAdmin ? "管理员权限启动失败" : "启动失败");
 }
 
 async function reveal(path) {

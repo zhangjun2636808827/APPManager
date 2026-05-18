@@ -1055,6 +1055,15 @@ fn upload_app_to_server_inner(
 
 #[tauri::command]
 fn launch_app(app_id: String) -> Result<AppData, String> {
+    launch_app_inner(app_id, false)
+}
+
+#[tauri::command]
+fn launch_app_as_admin(app_id: String) -> Result<AppData, String> {
+    launch_app_inner(app_id, true)
+}
+
+fn launch_app_inner(app_id: String, as_admin: bool) -> Result<AppData, String> {
     let library_path = library_root()?;
     let mut data = load_or_create_data(&library_path)?;
     let app = data
@@ -1073,16 +1082,38 @@ fn launch_app(app_id: String) -> Result<AppData, String> {
         return Err("启动程序不存在，请重新扫描或编辑软件信息".to_string());
     }
 
-    hidden_command(&executable)
-        .current_dir(executable.parent().unwrap_or_else(|| Path::new(".")))
-        .spawn()
-        .map_err(error_message)?;
+    if as_admin {
+        launch_process_as_admin(&executable)?;
+    } else {
+        hidden_command(&executable)
+            .current_dir(executable.parent().unwrap_or_else(|| Path::new(".")))
+            .spawn()
+            .map_err(error_message)?;
+    }
 
     app.launch_count += 1;
     app.last_launched_at = Some(now());
 
     save_data(&library_path, &data)?;
     Ok(data)
+}
+
+#[cfg(windows)]
+fn launch_process_as_admin(executable: &Path) -> Result<(), String> {
+    let parent = executable.parent().unwrap_or_else(|| Path::new("."));
+    hidden_command("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        .arg("Start-Process -FilePath $args[0] -WorkingDirectory $args[1] -Verb RunAs")
+        .arg(native_path_to_string(executable))
+        .arg(native_path_to_string(parent))
+        .spawn()
+        .map_err(error_message)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn launch_process_as_admin(_executable: &Path) -> Result<(), String> {
+    Err("管理员权限启动仅支持 Windows".to_string())
 }
 
 #[tauri::command]
@@ -4311,6 +4342,7 @@ pub fn run() {
             download_remote_app,
             upload_app_to_server,
             launch_app,
+            launch_app_as_admin,
             reveal_path
         ])
         .run(tauri::generate_context!())
