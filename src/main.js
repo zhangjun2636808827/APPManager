@@ -75,6 +75,7 @@ let connectionStatusTimer = null;
 let connectionStatusRefreshing = false;
 let renderSequence = 0;
 const transferPollers = {};
+let outsideContextMenuListenerBound = false;
 
 function invoke(command, payload) {
   return window.__TAURI__.core.invoke(command, payload);
@@ -1356,13 +1357,7 @@ function bindEvents() {
     event.preventDefault();
   }, { passive: false });
 
-  document.querySelector(".shell")?.addEventListener("click", (event) => {
-    if (event.target.closest(".modal, .modal-backdrop, .context-menu")) return;
-    if (state.contextMenu) {
-      state.contextMenu = null;
-      render();
-    }
-  });
+  bindOutsideContextMenuListener();
 
   bindAppCards();
 
@@ -1426,6 +1421,25 @@ function bindEvents() {
   });
 
   bindActionButtons(document);
+}
+
+function bindOutsideContextMenuListener() {
+  if (outsideContextMenuListenerBound) return;
+  outsideContextMenuListenerBound = true;
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!state.contextMenu) return;
+    if (event.target.closest(".context-menu, .app-card, .modal, .modal-backdrop")) return;
+    state.contextMenu = null;
+    render();
+  }, true);
+
+  document.addEventListener("contextmenu", (event) => {
+    if (!state.contextMenu) return;
+    if (event.target.closest(".context-menu, .app-card")) return;
+    state.contextMenu = null;
+    render();
+  }, true);
 }
 
 function bindAppCards() {
