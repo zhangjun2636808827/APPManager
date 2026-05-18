@@ -36,6 +36,7 @@ const SERVER_CLIENT_ONLINE_SECONDS: u64 = 30;
 const SERVER_CLIENT_KEEP_SECONDS: u64 = 5 * 60;
 const CLIENT_STATUS_CONNECT_TIMEOUT_MS: u64 = 1200;
 const CLIENT_STATUS_IO_TIMEOUT_MS: u64 = 1500;
+const ENABLE_DEBUG_LOGS: bool = false;
 static SERVER_RUNTIME: OnceLock<Mutex<Option<ServerRuntime>>> = OnceLock::new();
 static SERVER_CLIENTS: OnceLock<Mutex<HashMap<String, ServerClientInfo>>> = OnceLock::new();
 static TRANSFER_PROGRESS: OnceLock<Mutex<HashMap<String, TransferProgress>>> = OnceLock::new();
@@ -1828,7 +1829,7 @@ fn handle_upload_request(
             return;
         }
         written += count;
-        if last_emit.elapsed().as_millis() > 180 || written == content_length {
+        if last_emit.elapsed().as_millis() > 350 || written == content_length {
             emit_transfer_progress(
                 app_handle,
                 "upload",
@@ -2197,16 +2198,6 @@ fn emit_transfer_progress(
         if let Ok(mut store) = transfer_progress_store().lock() {
             store.insert(key, progress.clone());
         }
-        if status != "running"
-            || transferred == 0
-            || transferred == total
-            || transferred % (10 * 1024 * 1024) < 64 * 1024
-        {
-            log_debug(&format!(
-                "emit transfer direction={} app_id={} status={} transferred={} total={} percent={:.2} speed={}",
-                direction, app_id, status, transferred, total, percent, speed
-            ));
-        }
         let result = app_handle.emit("transfer-progress", progress);
         if let Err(error) = result {
             log_debug(&format!(
@@ -2441,7 +2432,7 @@ fn client_get_streaming(
 
         if headers_complete {
             transferred = response.len().saturating_sub(header_end) as u64;
-            if last_emit.elapsed().as_millis() > 180 || transferred == total {
+            if last_emit.elapsed().as_millis() > 350 || transferred == total {
                 emit_transfer_progress(
                     app_handle,
                     direction,
@@ -2551,7 +2542,7 @@ fn client_get_to_file(
     let mut output: Option<fs::File> = None;
     let mut chunk_index = 0u64;
     let mut next_progress_log = 10 * 1024 * 1024u64;
-    let mut next_emit_bytes = 512 * 1024u64;
+    let mut next_emit_bytes = 2 * 1024 * 1024u64;
     let mut last_pack_poll = Instant::now()
         .checked_sub(Duration::from_millis(800))
         .unwrap_or_else(Instant::now);
@@ -2661,7 +2652,7 @@ fn client_get_to_file(
         if headers_complete
             && (chunk_index <= 3
                 || transferred >= next_emit_bytes
-                || last_emit.elapsed().as_millis() > 180
+                || last_emit.elapsed().as_millis() > 350
                 || transferred == total)
         {
             emit_transfer_progress(
@@ -2846,7 +2837,7 @@ fn client_upload(
         }
         stream.write_all(&chunk[..count]).map_err(error_message)?;
         transferred += count as u64;
-        if last_emit.elapsed().as_millis() > 180 || transferred == total {
+        if last_emit.elapsed().as_millis() > 350 || transferred == total {
             emit_transfer_progress(
                 Some(app_handle),
                 "upload",
@@ -3501,7 +3492,7 @@ fn emit_zip_progress_if_needed(
     let Some(progress) = progress else {
         return;
     };
-    if !force && last_emit.elapsed().as_millis() <= 180 && work_done < total_work {
+    if !force && last_emit.elapsed().as_millis() <= 350 && work_done < total_work {
         return;
     }
     let transferred = if total_work == 0 {
@@ -4205,6 +4196,9 @@ fn native_path_to_string(path: &Path) -> String {
 }
 
 fn log_debug(message: &str) {
+    if !ENABLE_DEBUG_LOGS {
+        return;
+    }
     let Ok(library_path) = library_root() else {
         return;
     };

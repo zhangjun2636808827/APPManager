@@ -19,6 +19,8 @@ const demoApps = [
 ];
 
 const accents = ["blue", "orange", "green", "pink", "indigo", "slate", "teal"];
+const ENABLE_DEBUG_LOGS = false;
+const CONNECTION_STATUS_INTERVAL_MS = 15000;
 
 const state = {
   view: "favorites",
@@ -64,6 +66,7 @@ const state = {
 const app = document.querySelector("#app");
 let renderedView = null;
 let transferRenderTimer = null;
+let toastTimer = null;
 let connectionStatusTimer = null;
 let connectionStatusRefreshing = false;
 const transferPollers = {};
@@ -145,6 +148,7 @@ async function setupTransferListener() {
 }
 
 function debugLog(message) {
+  if (!ENABLE_DEBUG_LOGS) return;
   if (!state.isTauri) return;
   invoke("debug_log", { message }).catch(() => {});
 }
@@ -462,6 +466,16 @@ function render() {
   }
 }
 
+function renderChromeState() {
+  document.querySelector(".toast")?.remove();
+  if (state.toast) {
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.textContent = state.toast;
+    document.body.appendChild(toast);
+  }
+}
+
 function getRemoteNavCount() {
   const activeUploads = state.uploadQueue.filter((item) => getTransfer("upload", item.id)).length;
   return state.remoteApps.length + activeUploads;
@@ -759,7 +773,7 @@ function renderRemoteApps(source = "settings") {
   if (source === "menu") {
     return `
       <div class="remote-page">
-        ${renderRemoteStatusPanel()}
+        <div data-role="remote-status-panel">${renderRemoteStatusPanel()}</div>
         <div class="settings-action-row">
           <button class="ghost-button" data-action="refresh-connection-status">刷新连接状态</button>
           <button class="primary-action" data-action="fetch-remote-apps">获取服务端软件列表</button>
@@ -824,6 +838,16 @@ function renderRemoteStatusPanel() {
       </section>
     ` : ""}
   `;
+}
+
+function renderRemoteStatusOnly() {
+  const statusPanel = document.querySelector("[data-role='remote-status-panel']");
+  if (statusPanel) {
+    statusPanel.innerHTML = renderRemoteStatusPanel();
+    bindActionButtons(statusPanel);
+  } else {
+    renderContent();
+  }
 }
 
 function renderTransferAppRow(item, direction) {
@@ -1891,7 +1915,7 @@ async function refreshConnectionStatus(options = {}) {
       state.serverStatus = await invoke("get_server_status");
       state.clientStatus = await invoke("get_client_connection_status");
       if (state.view === "remote") {
-        renderContent();
+        renderRemoteStatusOnly();
       } else {
         renderServerStatusSummary();
       }
@@ -1905,7 +1929,7 @@ async function refreshConnectionStatus(options = {}) {
         message: String(error),
         checkedAt: Math.floor(Date.now() / 1000)
       };
-      if (state.view === "remote") renderContent();
+      if (state.view === "remote") renderRemoteStatusOnly();
     } finally {
       connectionStatusRefreshing = false;
     }
@@ -1930,7 +1954,7 @@ function startConnectionStatusPolling() {
   if (!state.isTauri || connectionStatusTimer) return;
   connectionStatusTimer = window.setInterval(() => {
     refreshConnectionStatus({ silent: true });
-  }, 8000);
+  }, CONNECTION_STATUS_INTERVAL_MS);
 }
 
 async function refreshPackageCache(options = {}) {
@@ -2136,11 +2160,11 @@ async function runTask(task, errorPrefix) {
 
 function showToast(message) {
   state.toast = message;
-  render();
-  window.clearTimeout(showToast.timer);
-  showToast.timer = window.setTimeout(() => {
+  renderChromeState();
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
     state.toast = "";
-    render();
+    renderChromeState();
   }, 3200);
 }
 
