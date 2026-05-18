@@ -23,6 +23,7 @@ const accents = ["blue", "orange", "green", "pink", "indigo", "slate", "teal"];
 const state = {
   view: "favorites",
   query: "",
+  theme: "light",
   density: "comfortable",
   modal: null,
   selectedAppId: null,
@@ -90,6 +91,8 @@ async function boot() {
     const result = await invoke("init_library");
     applyData(result.data);
     state.libraryPath = result.libraryPath;
+    state.theme = normalizeTheme(result.data.settings?.theme ?? state.theme);
+    applyTheme();
     state.density = result.data.settings?.gridDensity ?? "comfortable";
     state.runMode = result.data.settings?.runMode ?? "local";
     state.autostartEnabled = Boolean(result.data.settings?.autostartEnabled);
@@ -267,6 +270,8 @@ function applyData(data) {
     note: item.note || (item.executablePath ? "已识别启动程序" : "需要选择启动程序")
   }));
 
+  state.theme = normalizeTheme(data.settings?.theme ?? state.theme);
+  applyTheme();
   state.density = data.settings?.gridDensity ?? state.density;
   state.runMode = data.settings?.runMode ?? state.runMode;
   state.autostartEnabled = Boolean(data.settings?.autostartEnabled);
@@ -326,6 +331,22 @@ function sortFavorites(items) {
     if (leftOrder !== rightOrder) return leftOrder - rightOrder;
     return left.name.localeCompare(right.name, "zh-Hans-CN");
   });
+}
+
+function normalizeTheme(value) {
+  return ["light", "dark", "green"].includes(value) ? value : "light";
+}
+
+function themeLabel(value) {
+  return {
+    light: "浅色",
+    dark: "深色",
+    green: "青绿"
+  }[normalizeTheme(value)];
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = normalizeTheme(state.theme);
 }
 
 function getTitle() {
@@ -558,11 +579,16 @@ function renderSettingsPage() {
       <section class="settings-panel">
         <div>
           <h3>界面</h3>
-          <p>当前版本使用浅色主题，软件卡片支持舒适和紧凑两种密度。</p>
+          <p>主题和密度只影响当前界面显示，不改变软件库内容。</p>
         </div>
         <div class="setting-row">
           <span>主题</span>
-          <strong>浅色</strong>
+          <strong>${themeLabel(state.theme)}</strong>
+        </div>
+        <div class="theme-grid">
+          ${renderThemeOption("light", "浅色", "明亮清爽，适合日常管理")}
+          ${renderThemeOption("dark", "深色", "降低夜间和暗光环境亮度")}
+          ${renderThemeOption("green", "青绿", "更柔和的绿色工作台")}
         </div>
         <div class="setting-row">
           <span>网格密度</span>
@@ -699,6 +725,16 @@ function renderModeOption(value, title, description) {
     <button class="mode-option ${state.runMode === value ? "active" : ""}" data-run-mode="${value}" data-action="set-run-mode">
       <strong>${title}</strong>
       <span>${description}</span>
+    </button>
+  `;
+}
+
+function renderThemeOption(value, title, description) {
+  return `
+    <button class="theme-option ${state.theme === value ? "active" : ""}" data-theme="${value}">
+      <span class="theme-swatch ${value}"></span>
+      <strong>${escapeHtml(title)}</strong>
+      <small>${escapeHtml(description)}</small>
     </button>
   `;
 }
@@ -1250,6 +1286,14 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("[data-theme]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.theme = normalizeTheme(button.dataset.theme);
+      applyTheme();
+      render();
+    });
+  });
+
   bindActionButtons(document);
 }
 
@@ -1633,7 +1677,12 @@ async function reorderFavoriteApps(sourceId, targetId) {
 
   await runTask(async () => {
     const data = await invoke("update_favorite_order", { appIds: favorites });
+    const currentDensity = state.density;
+    const currentTheme = state.theme;
     applyData(data);
+    state.density = currentDensity;
+    state.theme = currentTheme;
+    applyTheme();
     showToast("常用软件顺序已保存");
   }, "保存常用软件顺序失败");
 }
@@ -1751,6 +1800,7 @@ async function saveSettings(source, options = {}) {
   const clientPort = Number(document.querySelector("[data-role='client-port']")?.value || state.clientPort);
   const settingsPayload = {
     runMode,
+    theme: state.theme,
     gridDensity: state.density,
     autostartEnabled: source.dataset.role === "autostart"
       ? Boolean(source.checked)
@@ -1777,6 +1827,8 @@ async function saveSettings(source, options = {}) {
 
   if (!state.isTauri) {
     state.runMode = settingsPayload.runMode;
+    state.theme = normalizeTheme(settingsPayload.theme);
+    applyTheme();
     state.autostartEnabled = settingsPayload.autostartEnabled;
     state.serverHost = settingsPayload.serverHost;
     state.serverPort = serverPort;

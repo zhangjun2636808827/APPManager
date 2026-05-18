@@ -297,6 +297,7 @@ struct UpdateAppInfoRequest {
 #[serde(rename_all = "camelCase")]
 struct UpdateSettingsRequest {
     run_mode: String,
+    theme: String,
     grid_density: String,
     autostart_enabled: bool,
     server_host: String,
@@ -624,11 +625,16 @@ fn update_settings(
         return Err("网格密度无效".to_string());
     }
 
+    if !["light", "dark", "green"].contains(&request.theme.as_str()) {
+        return Err("主题无效".to_string());
+    }
+
     set_windows_autostart(request.autostart_enabled)?;
 
     let library_path = library_root()?;
     let mut data = load_or_create_data(&library_path)?;
     data.settings.run_mode = request.run_mode;
+    data.settings.theme = request.theme;
     data.settings.grid_density = request.grid_density;
     data.settings.autostart_enabled = request.autostart_enabled;
     data.settings.server.host = request.server_host.trim().to_string();
