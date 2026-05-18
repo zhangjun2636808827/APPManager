@@ -19,7 +19,7 @@ const demoApps = [
 ];
 
 const accents = ["blue", "orange", "green", "pink", "indigo", "slate", "teal"];
-const ENABLE_DEBUG_LOGS = true;
+const ENABLE_DEBUG_LOGS = false;
 const CONNECTION_STATUS_INTERVAL_MS = 15000;
 const APP_GRID_RENDER_LIMIT = 240;
 const REMOTE_LIST_RENDER_LIMIT = 160;
@@ -278,8 +278,8 @@ function stopTransferPolling(key) {
 }
 
 function applyData(data) {
-  const counts = data.categories.reduce((map, category) => {
-    map[category.id] = data.apps.filter((item) => item.categoryId === category.id).length;
+  const counts = data.apps.reduce((map, item) => {
+    map[item.categoryId] = (map[item.categoryId] || 0) + 1;
     return map;
   }, {});
 
@@ -1410,7 +1410,9 @@ function bindEvents() {
 
   document.querySelectorAll("[data-theme]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.theme = normalizeTheme(button.dataset.theme);
+      const nextTheme = normalizeTheme(button.dataset.theme);
+      if (nextTheme === state.theme) return;
+      state.theme = nextTheme;
       applyTheme();
       renderThemeSelectionState();
       debugLog(`theme changed value=${state.theme} view=${state.view} ${memoryDebugText()}`);
@@ -2269,8 +2271,12 @@ async function launchApp(appId, asAdmin = false) {
   }
 
   await runTask(async () => {
-    const data = await invoke(asAdmin ? "launch_app_as_admin" : "launch_app", { appId });
-    applyData(data);
+    const result = await invoke(asAdmin ? "launch_app_as_admin" : "launch_app", { appId });
+    const app = state.apps.find((item) => item.id === result.appId);
+    if (app) {
+      app.launchCount = result.launchCount;
+      app.lastLaunchedAt = result.lastLaunchedAt;
+    }
     showToast(asAdmin ? "正在请求管理员权限启动" : "已发送启动命令");
   }, asAdmin ? "管理员权限启动失败" : "启动失败");
 }

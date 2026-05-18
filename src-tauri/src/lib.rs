@@ -37,7 +37,7 @@ const SERVER_CLIENT_ONLINE_SECONDS: u64 = 30;
 const SERVER_CLIENT_KEEP_SECONDS: u64 = 5 * 60;
 const CLIENT_STATUS_CONNECT_TIMEOUT_MS: u64 = 1200;
 const CLIENT_STATUS_IO_TIMEOUT_MS: u64 = 1500;
-const ENABLE_DEBUG_LOGS: bool = true;
+const ENABLE_DEBUG_LOGS: bool = false;
 static SERVER_RUNTIME: OnceLock<Mutex<Option<ServerRuntime>>> = OnceLock::new();
 static SERVER_CLIENTS: OnceLock<Mutex<HashMap<String, ServerClientInfo>>> = OnceLock::new();
 static TRANSFER_PROGRESS: OnceLock<Mutex<HashMap<String, TransferProgress>>> = OnceLock::new();
@@ -249,6 +249,14 @@ struct ScanResult {
     updated: usize,
     issues: Vec<ScanIssue>,
     data: AppData,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchResult {
+    app_id: String,
+    launch_count: u64,
+    last_launched_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1054,16 +1062,16 @@ fn upload_app_to_server_inner(
 }
 
 #[tauri::command]
-fn launch_app(app_id: String) -> Result<AppData, String> {
+fn launch_app(app_id: String) -> Result<LaunchResult, String> {
     launch_app_inner(app_id, false)
 }
 
 #[tauri::command]
-fn launch_app_as_admin(app_id: String) -> Result<AppData, String> {
+fn launch_app_as_admin(app_id: String) -> Result<LaunchResult, String> {
     launch_app_inner(app_id, true)
 }
 
-fn launch_app_inner(app_id: String, as_admin: bool) -> Result<AppData, String> {
+fn launch_app_inner(app_id: String, as_admin: bool) -> Result<LaunchResult, String> {
     let library_path = library_root()?;
     let mut data = load_or_create_data(&library_path)?;
     let app = data
@@ -1093,9 +1101,14 @@ fn launch_app_inner(app_id: String, as_admin: bool) -> Result<AppData, String> {
 
     app.launch_count += 1;
     app.last_launched_at = Some(now());
+    let result = LaunchResult {
+        app_id: app.id.clone(),
+        launch_count: app.launch_count,
+        last_launched_at: app.last_launched_at.unwrap_or_default(),
+    };
 
     save_data(&library_path, &data)?;
-    Ok(data)
+    Ok(result)
 }
 
 #[cfg(windows)]
