@@ -32,6 +32,8 @@ const PACKAGE_CACHE_DIR: &str = "package-cache";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ZIP_BUFFER_SIZE: usize = 64 * 1024;
+const SERVER_CLIENT_ONLINE_SECONDS: u64 = 30;
+const SERVER_CLIENT_KEEP_SECONDS: u64 = 5 * 60;
 static SERVER_RUNTIME: OnceLock<Mutex<Option<ServerRuntime>>> = OnceLock::new();
 static SERVER_CLIENTS: OnceLock<Mutex<HashMap<String, ServerClientInfo>>> = OnceLock::new();
 static TRANSFER_PROGRESS: OnceLock<Mutex<HashMap<String, TransferProgress>>> = OnceLock::new();
@@ -157,6 +159,7 @@ struct ServerClientInfo {
     username: String,
     last_path: String,
     last_seen_at: u64,
+    online: bool,
 }
 
 impl Default for Settings {
@@ -1261,12 +1264,17 @@ fn current_server_status() -> ServerStatus {
 }
 
 fn recent_server_clients() -> Vec<ServerClientInfo> {
-    let cutoff = now().saturating_sub(10 * 60 * 1000);
+    let current = now();
+    let keep_cutoff = current.saturating_sub(SERVER_CLIENT_KEEP_SECONDS);
+    let online_cutoff = current.saturating_sub(SERVER_CLIENT_ONLINE_SECONDS);
     let Ok(mut clients) = server_clients().lock() else {
         return Vec::new();
     };
-    clients.retain(|_, client| client.last_seen_at >= cutoff);
+    clients.retain(|_, client| client.last_seen_at >= keep_cutoff);
     let mut values = clients.values().cloned().collect::<Vec<_>>();
+    for client in &mut values {
+        client.online = client.last_seen_at >= online_cutoff;
+    }
     values.sort_by(|left, right| right.last_seen_at.cmp(&left.last_seen_at));
     values.truncate(12);
     values
@@ -1428,7 +1436,7 @@ fn handle_http_stream(mut stream: TcpStream, config: ServerConfig, app_handle: t
 fn remember_server_client(stream: &TcpStream, headers: &[(String, String)], path: &str) {
     let address = stream
         .peer_addr()
-        .map(|addr| addr.to_string())
+        .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let username = headers
         .iter()
@@ -1440,6 +1448,7 @@ fn remember_server_client(stream: &TcpStream, headers: &[(String, String)], path
         username,
         last_path: path.to_string(),
         last_seen_at: now(),
+        online: true,
     };
 
     if let Ok(mut clients) = server_clients().lock() {
@@ -2272,25 +2281,27 @@ fn client_connection_status(config: &ClientConfig) -> ClientConnectionStatus {
         return status;
     }
 
-    match client_get(config, "/api/server-info") {
+    match client_get(config, "/api/auth/test") {
         Ok(response) if response.status == 200 => {
-            let value = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
             status.online = true;
             status.message = "连接正常".to_string();
-            status.server_name = value
-                .as_ref()
-                .and_then(|item| item.get("name"))
-                .and_then(|item| item.as_str())
-                .map(|item| item.to_string());
-            status.server_mode = value
-                .as_ref()
-                .and_then(|item| item.get("mode"))
-                .and_then(|item| item.as_str())
-                .map(|item| item.to_string());
-            status.allow_downloads = value
-                .as_ref()
-                .and_then(|item| item.get("allowDownloads"))
-                .and_then(|item| item.as_bool());
+            if let Ok(info_response) = client_get(config, "/api/server-info") {
+                let value = serde_json::from_slice::<serde_json::Value>(&info_response.body).ok();
+                status.server_name = value
+                    .as_ref()
+                    .and_then(|item| item.get("name"))
+                    .and_then(|item| item.as_str())
+                    .map(|item| item.to_string());
+                status.server_mode = value
+                    .as_ref()
+                    .and_then(|item| item.get("mode"))
+                    .and_then(|item| item.as_str())
+                    .map(|item| item.to_string());
+                status.allow_downloads = value
+                    .as_ref()
+                    .and_then(|item| item.get("allowDownloads"))
+                    .and_then(|item| item.as_bool());
+            }
         }
         Ok(response) if response.status == 401 => {
             status.message = "认证失败，请检查用户名和密码".to_string();

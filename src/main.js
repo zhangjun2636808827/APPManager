@@ -62,6 +62,8 @@ const state = {
 const app = document.querySelector("#app");
 let renderedView = null;
 let transferRenderTimer = null;
+let connectionStatusTimer = null;
+let connectionStatusRefreshing = false;
 const transferPollers = {};
 
 function invoke(command, payload) {
@@ -99,6 +101,7 @@ async function boot() {
   }, "软件库初始化失败");
 
   render();
+  startConnectionStatusPolling();
 }
 
 async function setupTransferListener() {
@@ -495,6 +498,28 @@ function renderContent() {
   bindActionButtons(contentBody);
 }
 
+function renderServerStatusSummary() {
+  const statusElement = document.querySelector(".server-status");
+  if (!statusElement) return;
+  const running = Boolean(state.serverStatus?.running);
+  statusElement.classList.toggle("online", running);
+  statusElement.innerHTML = `
+    <span>${running ? "服务端运行中" : "服务端未运行"}</span>
+    <strong>${running ? `${escapeHtml(state.serverStatus.host)}:${escapeHtml(state.serverStatus.port)}` : "切换到服务端模式并保存后启动"}</strong>
+  `;
+}
+
+function formatCheckedAt(value) {
+  if (!value) return "未检测";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(value));
+  if (seconds < 5) return "刚刚";
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时前`;
+}
+
 function renderSettingsPage() {
   return `
     <div class="settings-page">
@@ -721,6 +746,7 @@ function renderRemoteStatusPanel() {
   };
   const server = state.serverStatus || { running: false, host: "", port: 0, clients: [] };
   const clients = server.clients || [];
+  const onlineClientCount = clients.filter((item) => item.online).length;
   return `
     <section class="remote-status-grid">
       <article class="connection-card ${client.online ? "online" : ""}">
@@ -732,6 +758,7 @@ function renderRemoteStatusPanel() {
         <dl>
           <dt>服务端</dt><dd>${escapeHtml(client.host || "-")}:${escapeHtml(client.port || "-")}</dd>
           <dt>用户</dt><dd>${escapeHtml(client.username || "-")}</dd>
+          <dt>检测时间</dt><dd>${formatCheckedAt(client.checkedAt)}</dd>
           <dt>下载</dt><dd>${client.allowDownloads === true ? "允许" : client.allowDownloads === false ? "禁止" : "未知"}</dd>
         </dl>
       </article>
@@ -740,10 +767,10 @@ function renderRemoteStatusPanel() {
           <span>本机服务端</span>
           <strong>${server.running ? "运行中" : "未运行"}</strong>
         </div>
-        <p>${server.running ? `${escapeHtml(server.host)}:${escapeHtml(server.port)}` : "切换到服务端模式并保存后启动"}</p>
+        <p>${server.running ? `只监听 ${escapeHtml(server.host)}:${escapeHtml(server.port)}；客户端源端口不会作为服务端口开放` : "切换到服务端模式并保存后启动"}</p>
         <dl>
-          <dt>最近客户端</dt><dd>${clients.length} 个</dd>
-          <dt>监听地址</dt><dd>${server.running ? `${escapeHtml(server.host)}:${escapeHtml(server.port)}` : "-"}</dd>
+          <dt>在线客户端</dt><dd>${onlineClientCount} / ${clients.length} 个</dd>
+          <dt>监听端口</dt><dd>${server.running ? escapeHtml(server.port) : "-"}</dd>
         </dl>
       </article>
     </section>
@@ -751,10 +778,10 @@ function renderRemoteStatusPanel() {
       <section class="connected-clients">
         <h3>最近连接客户端</h3>
         ${clients.map((client) => `
-          <div class="client-row">
+          <div class="client-row ${client.online ? "online" : "offline"}">
             <span>${escapeHtml(client.address)}</span>
             <strong>${escapeHtml(client.username || "anonymous")}</strong>
-            <small>${escapeHtml(client.lastPath || "")}</small>
+            <small>${client.online ? "在线" : "最近离线"} · ${escapeHtml(client.lastPath || "")}</small>
           </div>
         `).join("")}
       </section>
@@ -1732,6 +1759,34 @@ async function fetchRemoteApps() {
 }
 
 async function refreshConnectionStatus(options = {}) {
+  if (options.silent && state.isTauri) {
+    if (connectionStatusRefreshing) return;
+    connectionStatusRefreshing = true;
+    try {
+      state.serverStatus = await invoke("get_server_status");
+      state.clientStatus = await invoke("get_client_connection_status");
+      if (state.view === "remote") {
+        renderContent();
+      } else {
+        renderServerStatusSummary();
+      }
+    } catch (error) {
+      state.clientStatus = {
+        configured: Boolean(state.clientHost && state.clientUsername && state.clientPassword),
+        online: false,
+        host: state.clientHost,
+        port: state.clientPort,
+        username: state.clientUsername,
+        message: String(error),
+        checkedAt: Math.floor(Date.now() / 1000)
+      };
+      if (state.view === "remote") renderContent();
+    } finally {
+      connectionStatusRefreshing = false;
+    }
+    return;
+  }
+
   if (!state.isTauri) {
     if (!options.silent) showToast("浏览器预览模式不会检测连接状态");
     return;
@@ -1744,6 +1799,13 @@ async function refreshConnectionStatus(options = {}) {
       showToast(state.clientStatus?.online ? "远程连接正常" : `远程未连接：${state.clientStatus?.message || "未知状态"}`);
     }
   }, "刷新连接状态失败");
+}
+
+function startConnectionStatusPolling() {
+  if (!state.isTauri || connectionStatusTimer) return;
+  connectionStatusTimer = window.setInterval(() => {
+    refreshConnectionStatus({ silent: true });
+  }, 8000);
 }
 
 async function refreshPackageCache(options = {}) {
