@@ -75,6 +75,18 @@ function invoke(command, payload) {
   return window.__TAURI__.core.invoke(command, payload);
 }
 
+function isLocalMode() {
+  return state.runMode === "local";
+}
+
+function isServerMode() {
+  return state.runMode === "server";
+}
+
+function isClientMode() {
+  return state.runMode === "client";
+}
+
 async function boot() {
   render();
 
@@ -99,10 +111,10 @@ async function boot() {
     state.density = result.data.settings?.gridDensity ?? "comfortable";
     state.runMode = result.data.settings?.runMode ?? "local";
     state.autostartEnabled = Boolean(result.data.settings?.autostartEnabled);
-    state.serverStatus = state.isTauri ? await invoke("get_server_status") : null;
+    state.serverStatus = isServerMode() && state.isTauri ? await invoke("get_server_status") : null;
     state.packageCache = state.isTauri ? await invoke("get_package_cache_info") : state.packageCache;
-    state.clientStatus = state.isTauri ? await invoke("get_client_connection_status") : state.clientStatus;
-    if (state.runMode === "server") {
+    state.clientStatus = isClientMode() ? idleClientStatus() : inactiveClientStatus();
+    if (isServerMode()) {
       await refreshReviewApps({ silent: true });
     }
   }, "软件库初始化失败");
@@ -289,6 +301,43 @@ function applyData(data) {
   state.clientPort = data.settings?.client?.port ?? state.clientPort;
   state.clientUsername = data.settings?.client?.username ?? state.clientUsername;
   state.clientPassword = data.settings?.client?.password ?? state.clientPassword;
+}
+
+function inactiveClientStatus() {
+  return {
+    configured: false,
+    online: false,
+    host: state.clientHost,
+    port: state.clientPort,
+    username: state.clientUsername,
+    message: isServerMode()
+      ? "当前为服务端模式，客户端连接功能未启用"
+      : "当前为本地模式，远程连接功能未启用",
+    checkedAt: Math.floor(Date.now() / 1000),
+    allowDownloads: null
+  };
+}
+
+function idleClientStatus(message = "未检测") {
+  return {
+    configured: Boolean(state.clientHost && state.clientUsername && state.clientPassword),
+    online: false,
+    host: state.clientHost,
+    port: state.clientPort,
+    username: state.clientUsername,
+    message,
+    checkedAt: null,
+    allowDownloads: null
+  };
+}
+
+function inactiveServerStatus() {
+  return {
+    running: false,
+    host: "",
+    port: 0,
+    clients: []
+  };
 }
 
 function getVisibleApps() {
@@ -754,17 +803,35 @@ function renderThemeOption(value, title, description) {
 }
 
 function renderRemoteApps(source = "settings") {
+  if (isLocalMode()) {
+    const content = `<div class="remote-empty">当前为本地模式，远程连接功能已关闭。</div>`;
+    return source === "menu"
+      ? `
+        <div class="remote-page">
+          <div data-role="remote-status-panel">${renderRemoteStatusPanel()}</div>
+          ${content}
+        </div>
+      `
+      : content;
+  }
+
   const uploadItems = state.uploadQueue.filter((item) => getTransfer("upload", item.id));
-  const content = !state.remoteApps.length && !uploadItems.length
+  const remoteItems = isClientMode() ? state.remoteApps : [];
+  const emptyText = isServerMode()
+    ? "当前为服务端模式，客户端连接和服务端软件列表功能未启用。"
+    : source === "menu"
+      ? "还没有服务端软件列表。请先保存客户端设置，然后获取服务端软件列表。"
+      : "还没有服务端软件列表。请先保存客户端设置，然后点击“获取服务端软件列表”。";
+  const content = !remoteItems.length && !uploadItems.length
     ? `
       <div class="remote-empty">
-        ${source === "menu" ? "还没有服务端软件列表。请先保存客户端设置，然后获取服务端软件列表。" : "还没有服务端软件列表。请先保存客户端设置，然后点击“获取服务端软件列表”。"}
+        ${emptyText}
       </div>
     `
     : `
       <div class="remote-app-list">
         ${uploadItems.map((item) => renderTransferAppRow(item, "upload")).join("")}
-        ${state.remoteApps.map((item) => `
+        ${remoteItems.map((item) => `
           ${renderTransferAppRow(item, "download")}
         `).join("")}
       </div>
@@ -774,10 +841,12 @@ function renderRemoteApps(source = "settings") {
     return `
       <div class="remote-page">
         <div data-role="remote-status-panel">${renderRemoteStatusPanel()}</div>
-        <div class="settings-action-row">
-          <button class="ghost-button" data-action="refresh-connection-status">刷新连接状态</button>
-          <button class="primary-action" data-action="fetch-remote-apps">获取服务端软件列表</button>
-        </div>
+        ${isClientMode() ? `
+          <div class="settings-action-row">
+            <button class="ghost-button" data-action="refresh-connection-status">刷新连接状态</button>
+            <button class="primary-action" data-action="fetch-remote-apps">获取服务端软件列表</button>
+          </div>
+        ` : ""}
         ${content}
       </div>
     `;
@@ -787,15 +856,15 @@ function renderRemoteApps(source = "settings") {
 }
 
 function renderRemoteStatusPanel() {
-  const client = state.clientStatus || {
+  const client = isClientMode() ? (state.clientStatus || {
     configured: false,
     online: false,
     host: state.clientHost,
     port: state.clientPort,
     username: state.clientUsername,
     message: "未检测"
-  };
-  const server = state.serverStatus || { running: false, host: "", port: 0, clients: [] };
+  }) : inactiveClientStatus();
+  const server = isServerMode() ? (state.serverStatus || inactiveServerStatus()) : inactiveServerStatus();
   const clients = server.clients || [];
   const onlineClientCount = clients.filter((item) => item.online).length;
   return `
@@ -1220,7 +1289,7 @@ function bindEvents() {
       state.view = button.dataset.view;
       if (state.view === "remote") {
         render();
-        refreshConnectionStatus({ silent: true });
+        window.setTimeout(() => refreshConnectionStatus({ silent: true }), 0);
         return;
       }
       render();
@@ -1461,6 +1530,9 @@ async function handleAction(button) {
 
   if (action === "set-run-mode") {
     state.runMode = button.dataset.runMode;
+    state.clientStatus = isClientMode() ? idleClientStatus(state.clientStatus?.message || "未检测") : inactiveClientStatus();
+    if (!isServerMode()) state.serverStatus = inactiveServerStatus();
+    if (!isClientMode()) state.remoteApps = [];
     render();
     return;
   }
@@ -1471,11 +1543,19 @@ async function handleAction(button) {
   }
 
   if (action === "test-client") {
+    if (!isClientMode()) {
+      showToast("当前不是客户端模式，客户端连接功能未启用");
+      return;
+    }
     if (await saveSettings(button, { silent: true })) await testClientConnection();
     return;
   }
 
   if (action === "fetch-remote-apps") {
+    if (!isClientMode()) {
+      showToast("当前不是客户端模式，不能获取服务端软件列表");
+      return;
+    }
     if (await saveSettings(button, { silent: true })) await fetchRemoteApps();
     return;
   }
@@ -1496,16 +1576,28 @@ async function handleAction(button) {
   }
 
   if (action === "download-remote-app") {
+    if (!isClientMode()) {
+      showToast("当前不是客户端模式，不能下载远程软件");
+      return;
+    }
     await downloadRemoteApp(button.dataset.appId);
     return;
   }
 
   if (action === "upload-app") {
+    if (!isClientMode()) {
+      showToast("当前不是客户端模式，不能上传到服务端");
+      return;
+    }
     await uploadAppToServer(button.dataset.appId);
     return;
   }
 
   if (action === "refresh-review-apps") {
+    if (!isServerMode()) {
+      showToast("当前不是服务端模式，未审核软件功能未启用");
+      return;
+    }
     await refreshReviewApps();
     return;
   }
@@ -1811,6 +1903,9 @@ async function saveSettings(source, options = {}) {
     state.clientPort = clientPort;
     state.clientUsername = settingsPayload.clientUsername;
     state.clientPassword = settingsPayload.clientPassword;
+    state.clientStatus = isClientMode() ? idleClientStatus("设置已保存，尚未检测连接") : inactiveClientStatus();
+    state.serverStatus = isServerMode() ? state.serverStatus : inactiveServerStatus();
+    if (!isClientMode()) state.remoteApps = [];
     render();
     return true;
   }
@@ -1820,8 +1915,9 @@ async function saveSettings(source, options = {}) {
       request: settingsPayload
     });
     applyData(data);
-    state.serverStatus = await invoke("get_server_status");
-    state.clientStatus = await invoke("get_client_connection_status");
+    state.serverStatus = isServerMode() ? await invoke("get_server_status") : inactiveServerStatus();
+    state.clientStatus = isClientMode() ? idleClientStatus("设置已保存，尚未检测连接") : inactiveClientStatus();
+    if (!isClientMode()) state.remoteApps = [];
     if (!options.silent) showToast("设置已保存");
   }, "保存设置失败");
 }
@@ -1835,7 +1931,7 @@ async function testClientConnection() {
   await runTask(async () => {
     const message = await invoke("test_client_connection");
     state.clientStatus = await invoke("get_client_connection_status");
-    state.serverStatus = await invoke("get_server_status");
+    state.serverStatus = inactiveServerStatus();
     showToast(message);
   }, "测试连接失败");
 }
@@ -1847,21 +1943,29 @@ async function fetchRemoteApps() {
   }
 
   await runTask(async () => {
-    state.clientStatus = await invoke("get_client_connection_status");
     state.remoteApps = await invoke("fetch_remote_apps");
-    state.serverStatus = await invoke("get_server_status");
+    state.clientStatus = await invoke("get_client_connection_status");
+    state.serverStatus = inactiveServerStatus();
     state.view = "remote";
     showToast(`已获取 ${state.remoteApps.length} 个服务端软件`);
   }, "获取服务端软件失败");
 }
 
 async function refreshConnectionStatus(options = {}) {
+  if (isLocalMode()) {
+    state.serverStatus = inactiveServerStatus();
+    state.clientStatus = inactiveClientStatus();
+    if (state.view === "remote") renderRemoteStatusOnly();
+    if (!options.silent) showToast("当前为本地模式，远程连接功能已关闭");
+    return;
+  }
+
   if (options.silent && state.isTauri) {
     if (connectionStatusRefreshing) return;
     connectionStatusRefreshing = true;
     try {
-      state.serverStatus = await invoke("get_server_status");
-      state.clientStatus = await invoke("get_client_connection_status");
+      state.serverStatus = isServerMode() ? await invoke("get_server_status") : inactiveServerStatus();
+      state.clientStatus = isClientMode() ? await invoke("get_client_connection_status") : inactiveClientStatus();
       if (state.view === "remote") {
         renderRemoteStatusOnly();
       } else {
@@ -1890,10 +1994,13 @@ async function refreshConnectionStatus(options = {}) {
   }
 
   await runTask(async () => {
-    state.serverStatus = await invoke("get_server_status");
-    state.clientStatus = await invoke("get_client_connection_status");
+    state.serverStatus = isServerMode() ? await invoke("get_server_status") : inactiveServerStatus();
+    state.clientStatus = isClientMode() ? await invoke("get_client_connection_status") : inactiveClientStatus();
     if (!options.silent) {
-      showToast(state.clientStatus?.online ? "远程连接正常" : `远程未连接：${state.clientStatus?.message || "未知状态"}`);
+      const message = isClientMode()
+        ? (state.clientStatus?.online ? "远程连接正常" : `远程未连接：${state.clientStatus?.message || "未知状态"}`)
+        : "服务端状态已刷新";
+      showToast(message);
     }
   }, "刷新连接状态失败");
 }
@@ -1901,6 +2008,7 @@ async function refreshConnectionStatus(options = {}) {
 function startConnectionStatusPolling() {
   if (!state.isTauri || connectionStatusTimer) return;
   connectionStatusTimer = window.setInterval(() => {
+    if (isLocalMode()) return;
     refreshConnectionStatus({ silent: true });
   }, CONNECTION_STATUS_INTERVAL_MS);
 }

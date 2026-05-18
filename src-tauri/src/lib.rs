@@ -676,6 +676,9 @@ fn get_package_cache_info() -> Result<PackageCacheInfo, String> {
 fn get_client_connection_status() -> Result<ClientConnectionStatus, String> {
     let library_path = library_root()?;
     let data = load_or_create_data(&library_path)?;
+    if data.settings.run_mode != "client" {
+        return Ok(inactive_client_connection_status(&data.settings));
+    }
     Ok(client_connection_status(&data.settings.client))
 }
 
@@ -738,6 +741,7 @@ fn debug_log(message: String) -> Result<(), String> {
 fn test_client_connection() -> Result<String, String> {
     let library_path = library_root()?;
     let data = load_or_create_data(&library_path)?;
+    ensure_client_mode(&data.settings)?;
     let response = client_get(&data.settings.client, "/api/auth/test")?;
 
     if response.status == 200 {
@@ -753,6 +757,7 @@ fn test_client_connection() -> Result<String, String> {
 fn fetch_remote_apps() -> Result<Vec<ManagedApp>, String> {
     let library_path = library_root()?;
     let data = load_or_create_data(&library_path)?;
+    ensure_client_mode(&data.settings)?;
     let response = client_get(&data.settings.client, "/api/apps")?;
 
     if response.status != 200 {
@@ -870,6 +875,7 @@ fn download_remote_app_inner(
 ) -> Result<AppData, String> {
     let library_path = library_root()?;
     let mut data = load_or_create_data(&library_path)?;
+    ensure_client_mode(&data.settings)?;
     let path = format!("/api/apps/{app_id}/download");
     let temp_download_path = std::env::temp_dir().join(format!(
         "appmanager-download-{app_id}-{}.part",
@@ -1016,6 +1022,7 @@ fn upload_app_to_server_inner(
 ) -> Result<String, String> {
     let library_path = library_root()?;
     let data = load_or_create_data(&library_path)?;
+    ensure_client_mode(&data.settings)?;
     let app = data
         .apps
         .iter()
@@ -2365,6 +2372,33 @@ fn client_connection_status(config: &ClientConfig) -> ClientConnectionStatus {
     }
 
     status
+}
+
+fn inactive_client_connection_status(settings: &Settings) -> ClientConnectionStatus {
+    ClientConnectionStatus {
+        configured: false,
+        online: false,
+        host: settings.client.host.trim().to_string(),
+        port: settings.client.port,
+        username: settings.client.username.trim().to_string(),
+        message: match settings.run_mode.as_str() {
+            "server" => "当前为服务端模式，客户端连接功能未启用".to_string(),
+            "local" => "当前为本地模式，远程连接功能未启用".to_string(),
+            _ => "客户端连接功能未启用".to_string(),
+        },
+        server_name: None,
+        server_mode: None,
+        allow_downloads: None,
+        checked_at: now(),
+    }
+}
+
+fn ensure_client_mode(settings: &Settings) -> Result<(), String> {
+    if settings.run_mode == "client" {
+        Ok(())
+    } else {
+        Err("当前不是客户端模式，远程客户端功能未启用".to_string())
+    }
 }
 
 fn client_get_streaming(
