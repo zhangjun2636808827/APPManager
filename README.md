@@ -18,9 +18,9 @@ AppManager 是一个面向 Windows 的本地软件管理与启动工具。它可
 - 局域网客户端：连接服务端，获取远程软件列表、下载软件、上传本地软件。
 - 传输进度：下载时显示打包、下载、解压、安装等阶段进度。
 
-## 截图
+## 软件预览
 
-截图暂未提交到仓库。后续可以把截图放到 `docs/images/` 目录，并按下面的位置替换。
+图片暂未提交到仓库。后续可以把截图放到 `docs/images/` 目录，并按下面的位置替换。
 
 | 页面 | 图片位置建议 | 说明 |
 | --- | --- | --- |
@@ -34,6 +34,103 @@ AppManager 是一个面向 Windows 的本地软件管理与启动工具。它可
 ![设置页](docs/images/settings.png)
 ![远程软件](docs/images/remote-apps.png)
 ![审核列表](docs/images/review-list.png)
+```
+
+### 主界面
+
+主界面用于浏览本地软件库、切换分类、搜索软件、收藏软件和执行启动/打开目录/编辑/移动/上传等操作。
+
+```md
+![AppManager 主界面](docs/images/main-window.png)
+```
+
+### 设置页
+
+设置页用于切换本地模式、服务端模式和客户端模式，配置服务端监听地址、客户端连接信息、开机自启等选项。
+
+```md
+![AppManager 设置页](docs/images/settings.png)
+```
+
+### 远程软件与传输进度
+
+远程软件页用于查看服务端软件列表，执行下载、上传，并展示打包、下载、解压、安装等传输阶段。
+
+```md
+![AppManager 远程软件](docs/images/remote-apps.png)
+```
+
+### 服务端审核
+
+服务端审核区用于处理客户端上传的软件，通过后会移动到软件库分类中，拒绝后会清理对应上传文件。
+
+```md
+![AppManager 审核列表](docs/images/review-list.png)
+```
+
+## 架构预览
+
+AppManager 由前端界面、Tauri 命令层、本地软件库和局域网传输服务组成。前端负责状态展示和用户操作，Rust 后端负责文件扫描、软件启动、配置读写、服务端 HTTP 接口和客户端传输。
+
+```mermaid
+flowchart LR
+  User["用户"]
+  UI["前端界面<br/>src/main.js + styles.css"]
+  Tauri["Tauri 命令层"]
+  Core["Rust 核心逻辑<br/>src-tauri/src/lib.rs"]
+  Library["AppManagerLibrary<br/>Apps + config/app-data.json"]
+  Server["内置 HTTP 服务端<br/>软件列表 / 下载 / 上传 / 进度"]
+  Client["客户端传输模块<br/>连接远程 AppManager"]
+  Remote["局域网内另一台 AppManager"]
+
+  User --> UI
+  UI --> Tauri
+  Tauri --> Core
+  Core --> Library
+  Core --> Server
+  Core --> Client
+  Server <--> Remote
+  Client <--> Remote
+```
+
+### 本地模式流程
+
+```mermaid
+flowchart TD
+  A["创建分类"] --> B["把软件文件夹放入分类目录"]
+  B --> C["扫描分类"]
+  C --> D["识别 .exe 启动程序"]
+  D --> E["写入 app-data.json"]
+  E --> F["在界面中启动、收藏、编辑或移动软件"]
+```
+
+### 局域网传输流程
+
+```mermaid
+sequenceDiagram
+  participant Client as 客户端 AppManager
+  participant Server as 服务端 AppManager
+  participant Library as 服务端软件库
+
+  Client->>Server: 请求远程软件列表
+  Server->>Client: 返回软件列表
+  Client->>Server: 请求下载软件
+  Server->>Library: 打包目标软件
+  Server->>Client: 发送打包进度 packing
+  Server->>Client: 传输 zip 文件 running
+  Client->>Client: 解压 extracting
+  Client->>Client: 写入本地软件库 installing
+  Client->>Server: 上传本地软件
+  Server->>Library: 保存到未审核目录
+  Server->>Server: 管理员通过或拒绝
+```
+
+架构图片也可以后续手动导出成静态图，建议保存到：
+
+```text
+docs/images/architecture.png
+docs/images/local-flow.png
+docs/images/transfer-flow.png
 ```
 
 ## 技术栈
@@ -320,4 +417,4 @@ git branch backup-before-rollback
 
 ## License
 
-当前仓库暂未声明开源许可证。正式对外开放协作前，建议补充 `LICENSE` 文件。
+本项目基于 [MIT License](LICENSE) 开源。
